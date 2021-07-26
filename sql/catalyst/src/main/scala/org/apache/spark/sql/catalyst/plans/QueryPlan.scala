@@ -21,6 +21,13 @@ import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.types.{DataType, StructType}
 
+/**
+ * QueryPlan类下面包含逻辑算子树（LogicalPlan）和物理执行算子树（SparkPlan）两个重要的子类，
+ * 其中逻辑算子树在Catalyst中内置实现，可以剥离出来直接应用到其他系统中；
+ * 而物理算子树SparkPlan和Spark执行层紧密相关，当Catalyst应用到其他计算模型时，可以进行相应的适配修改。
+ *
+ * @tparam PlanType
+ */
 abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanType] {
   self: PlanType =>
 

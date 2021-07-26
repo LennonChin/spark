@@ -62,6 +62,12 @@ abstract class Expression extends TreeNode[Expression] {
    *  - A [[Not]], [[IsNull]], or [[IsNotNull]] is foldable if its child is foldable
    *  - A [[Literal]] is foldable
    *  - A [[Cast]] or [[UnaryMinus]] is foldable if its child is foldable
+   *
+   * 用来标记表达式能否在查询执行之前直接静态计算。目前，foldable为true的情况有两种：
+   *  - 第一种是该表达式为Literal类型（“字面值”，例如常量等）。
+   *  - 第二种是当且仅当其子表达式中foldable都为true时。
+   *
+   * 当foldable为true时，在算子树中，表达式可以预先直接处理（“折叠”）。
    */
   def foldable: Boolean = false
 
@@ -76,11 +82,19 @@ abstract class Expression extends TreeNode[Expression] {
    *
    * An example would be `SparkPartitionID` that relies on the partition id returned by TaskContext.
    * By default leaf expressions are deterministic as Nil.forall(_.deterministic) returns true.
+   *
+   * deterministic：adj.(思想、解释等)基于决定论的; (力量、因素)不可抗拒的，不可逆转的;
+   *
+   * 用来标记表达式是否为确定性的，即每次执行eval函数的输出是否都相同。
+   * 考虑到Spark分布式执行环境中数据的Shuffle操作带来的不确定性，以及某些表达式（如Rand等）本身具有不确定性，
+   * 该属性对于算子树优化中判断谓词能否下推等很有必要。
    */
   def deterministic: Boolean = children.forall(_.deterministic)
 
+  // 用来标记表达式是否可能输出Null值，一般在生成的Java代码中对相关条件进行判断。
   def nullable: Boolean
 
+  // 返回值为AttributeSet类型，表示该Expression中会涉及的属性值，默认情况为所有子节点中属性值的集合。
   def references: AttributeSet = AttributeSet(children.flatMap(_.references.iterator))
 
   /** Returns the result of evaluating this expression on a given input Row */
@@ -89,6 +103,8 @@ abstract class Expression extends TreeNode[Expression] {
   /**
    * Returns an [[ExprCode]], that contains the Java source code to generate the result of
    * evaluating the expression on an input row.
+   *
+   * 用于生成表达式对应的Java代码
    *
    * @param ctx a [[CodegenContext]]
    * @return [[ExprCode]]
@@ -115,6 +131,8 @@ abstract class Expression extends TreeNode[Expression] {
    * Returns Java source code that can be compiled to evaluate this expression.
    * The default behavior is to call the eval method of the expression. Concrete expression
    * implementations should override this to do actual code generation.
+   *
+   * 用于生成表达式对应的Java代码
    *
    * @param ctx a [[CodegenContext]]
    * @param ev an [[ExprCode]] with unique terms.
@@ -150,6 +168,9 @@ abstract class Expression extends TreeNode[Expression] {
    *
    * `deterministic` expressions where `this.canonicalized == other.canonicalized` will always
    * evaluate to the same result.
+   *
+   * 返回经过规范化（Canonicalize）处理后的表达式。
+   * 规范化处理会在确保输出结果相同的前提下通过一些规则对表达式进行重写，具体逻辑可以参见 [[Canonicalize]] 工具类。
    */
   lazy val canonicalized: Expression = {
     val canonicalizedChildren = children.map(_.canonicalized)
@@ -161,6 +182,9 @@ abstract class Expression extends TreeNode[Expression] {
    * cosmetically (i.e. capitalization of names in attributes may be different).
    *
    * See [[Canonicalize]] for more details.
+   *
+   * 判断两个表达式在语义上是否等价。
+   * 基本的判断条件是两个表达式都是确定性的（deterministic为true）且两个表达式经过规范化处理后（Canonicalized）仍然相同。
    */
   def semanticEquals(other: Expression): Boolean =
     deterministic && other.deterministic && canonicalized == other.canonicalized
@@ -197,6 +221,7 @@ abstract class Expression extends TreeNode[Expression] {
 
   override def simpleString: String = toString
 
+  // 用于查看该Expression的具体内容，如表达式名和输入参数等
   override def toString: String = prettyName + Utils.truncatedString(
     flatArguments.toSeq, "(", ", ", ")")
 

@@ -42,6 +42,12 @@ import org.apache.spark.util.Utils
 /** Used by [[TreeNode.getNodeNumbered]] when traversing the tree for a given number */
 private class MutableInt(var i: Int)
 
+/**
+ * 根据TreeNode定位到对应的SQL字符串中的行数和起始位置
+ *
+ * @param line 行号
+ * @param startPosition 偏移量
+ */
 case class Origin(
   line: Option[Int] = None,
   startPosition: Option[Int] = None)
@@ -65,6 +71,7 @@ object CurrentOrigin {
       value.get.copy(line = Some(line), startPosition = Some(start)))
   }
 
+  // 支持在TreeNode上执行操作的同时修改当前origin信息
   def withOrigin[A](o: Origin)(f: => A): A = {
     set(o)
     val ret = try f finally { reset() }
@@ -74,6 +81,13 @@ object CurrentOrigin {
 }
 
 // scalastyle:off
+/**
+ * TreeNode类是Spark SQL中所有树结构的基类，定义了一系列通用的集合操作和树遍历操作接口。
+ * TreeNode一直在内存里维护，不会dump到磁盘以文件形式存储，
+ * 且无论在映射逻辑执行计划阶段，还是优化逻辑执行计划阶段，树的修改都是以 **替换** 已有节点的方式进行的。
+ *
+ * @tparam BaseType 从类型限定可以看出TreeNode是一个嵌套结构
+ */
 abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 // scalastyle:on
   self: BaseType =>
@@ -83,6 +97,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Returns a Seq of the children of this node.
    * Children should not change. Immutability required for containsChild optimization
+   *
+   * 表示孩子节点
    */
   def children: Seq[BaseType]
 
@@ -162,6 +178,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
   /**
    * Returns a Seq containing the leaves in this tree.
+   *
+   * 获取当前TreeNode的所有叶子节点
    */
   def collectLeaves(): Seq[BaseType] = {
     this.collect { case p if p.children.isEmpty => p }
@@ -170,6 +188,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Finds and returns the first [[TreeNode]] of the tree for which the given partial function
    * is defined (pre-order), and applies the partial function to it.
+   *
+   * 先序遍历所有节点并返回第一个满足条件的节点
    */
   def collectFirst[B](pf: PartialFunction[BaseType, B]): Option[B] = {
     val lifted = pf.lift
@@ -214,6 +234,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Returns a copy of this node with the children replaced.
    * TODO: Validate somewhere (in debug mode?) that children are ordered correctly.
+   *
+   * 将当前节点的子节点替换为新的子节点
    */
   def withNewChildren(newChildren: Seq[BaseType]): BaseType = {
     assert(newChildren.size == children.size, "Incorrect number of children")
@@ -281,6 +303,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Returns a copy of this node where `rule` has been recursively applied to it and all of its
    * children (pre-order). When `rule` does not apply to a given node it is left unchanged.
    *
+   * 用先序遍历的方式将规则作用于所有的节点
+   *
    * @param rule the function used to transform this nodes children
    */
   def transformDown(rule: PartialFunction[BaseType, BaseType]): BaseType = {
@@ -301,6 +325,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * children and then itself (post-order). When `rule` does not apply to a given node, it is left
    * unchanged.
    *
+   * 用后序遍历的方式将规则作用于所有的节点
+   *
    * @param rule the function use to transform this nodes children
    */
   def transformUp(rule: PartialFunction[BaseType, BaseType]): BaseType = {
@@ -319,6 +345,9 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Returns a copy of this node where `rule` has been recursively applied to all the children of
    * this node.  When `rule` does not apply to a given node it is left unchanged.
+   *
+   * 递归地将规划作用到所有子节点
+   *
    * @param rule the function used to transform this nodes children
    */
   protected def transformChildren(
@@ -480,7 +509,11 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
   override def toString: String = treeString
 
-  /** Returns a string representation of the nodes in this tree */
+  /**
+   * Returns a string representation of the nodes in this tree
+   *
+   * 将TreeNode以树型结构展示，在查看表达式、逻辑算子树和物理算子树时经常用到。
+   * */
   def treeString: String = treeString(verbose = true)
 
   def treeString(verbose: Boolean): String = {

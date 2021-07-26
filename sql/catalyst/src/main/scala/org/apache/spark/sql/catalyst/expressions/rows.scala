@@ -26,9 +26,12 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
 /**
  * An extended version of [[InternalRow]] that implements all special getters, toString
  * and equals/hashCode by `genericGet`.
+ *
+ * 实现了InternalRow中定义的所有get类型方法，这些方法的实现都通过调用类中定义的genericGet虚函数进行，该函数的实现在下一级子类中。
  */
 trait BaseGenericInternalRow extends InternalRow {
 
+  // 该函数的实现在下一级子类中
   protected def genericGet(ordinal: Int): Any
 
   // default implementation (slow)
@@ -190,6 +193,9 @@ class GenericRowWithSchema(values: Array[Any], override val schema: StructType)
  * An internal row implementation that uses an array of objects as the underlying storage.
  * Note that, while the array is not copied, and thus could technically be mutated after creation,
  * this is not allowed.
+ *
+ * 构造参数是Array[Any]类型，采用对象数组进行底层存储。
+ * 数组是非拷贝的，因此GenericInternalRow一旦创建，就不允许通过set操作进行改变。
  */
 class GenericInternalRow(val values: Array[Any]) extends BaseGenericInternalRow {
   /** No-arg constructor for serialization. */
@@ -197,6 +203,7 @@ class GenericInternalRow(val values: Array[Any]) extends BaseGenericInternalRow 
 
   def this(size: Int) = this(new Array[Any](size))
 
+  // 直接根据下标访问的
   override protected def genericGet(ordinal: Int) = values(ordinal)
 
   override def toSeq(fieldTypes: Seq[DataType]): Seq[Any] = values.clone()

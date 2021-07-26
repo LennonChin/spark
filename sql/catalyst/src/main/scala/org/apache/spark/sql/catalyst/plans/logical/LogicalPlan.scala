@@ -25,7 +25,9 @@ import org.apache.spark.sql.catalyst.plans.QueryPlan
 import org.apache.spark.sql.catalyst.trees.CurrentOrigin
 import org.apache.spark.sql.types.StructType
 
-
+/**
+ * 逻辑算子树在Catalyst中内置实现，可以剥离出来直接应用到其他系统中
+ */
 abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 
   private var _analyzed: Boolean = false

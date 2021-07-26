@@ -40,6 +40,8 @@ import org.apache.spark.util.ThreadUtils
  * The base class for physical operators.
  *
  * The naming convention is that physical operators end with "Exec" suffix, e.g. [[ProjectExec]].
+ *
+ * 物理算子树SparkPlan和Spark执行层紧密相关，当Catalyst应用到其他计算模型时，可以进行相应的适配修改。
  */
 abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializable {
 

@@ -24,6 +24,8 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 
 /**
  * A non-concrete data type, reserved for internal uses.
+ *
+ * Catalyst内置数据类型的顶层抽象类
  */
 private[sql] abstract class AbstractDataType {
   /**

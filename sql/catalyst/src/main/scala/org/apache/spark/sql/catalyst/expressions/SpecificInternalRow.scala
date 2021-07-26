@@ -190,6 +190,8 @@ final class MutableAny extends MutableValue {
  * A row type that holds an array specialized container objects, of type [[MutableValue]], chosen
  * based on the dataTypes of each column.  The intent is to decrease garbage when modifying the
  * values of primitive columns.
+ *
+ * 以Array[MutableValue]为构造参数的，允许通过set操作进行修改。
  */
 final class SpecificInternalRow(val values: Array[MutableValue]) extends BaseGenericInternalRow {
 
@@ -231,6 +233,7 @@ final class SpecificInternalRow(val values: Array[MutableValue]) extends BaseGen
     new GenericInternalRow(newValues)
   }
 
+  // 直接根据下标访问的
   override protected def genericGet(i: Int): Any = values(i).boxed
 
   override def update(ordinal: Int, value: Any) {

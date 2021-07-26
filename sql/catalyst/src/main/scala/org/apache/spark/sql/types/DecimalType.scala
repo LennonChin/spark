@@ -37,6 +37,9 @@ import org.apache.spark.sql.catalyst.expressions.Expression
  * Please use `DataTypes.createDecimalType()` to create a specific instance.
  *
  * @since 1.3.0
+ *
+ * @param precision 整数部分的位数
+ * @param scale 小数部分的位数
  */
 @InterfaceStability.Stable
 case class DecimalType(precision: Int, scale: Int) extends FractionalType {

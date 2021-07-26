@@ -23,9 +23,15 @@ import org.apache.spark.sql.types.{DataType, Decimal, StructType}
 /**
  * An abstract class for row used internally in Spark SQL, which only contains the columns as
  * internal types.
+ *
+ * 在Spark SQL内部实现中，InternalRow就是用来表示一行行数据的类
+ * 物理算子树节点产生和转换的RDD类型即为RDD[InternalRow]类型
+ * InternalRow中每一列都是Catalyst内部定义的数据类型
+ * InternalRow中都是根据下标来访问和操作列元素的
  */
 abstract class InternalRow extends SpecializedGetters with Serializable {
 
+  // 获取字段数量
   def numFields: Int
 
   // This is only use for test and will throw a null pointer exception if the position is null.
@@ -33,6 +39,7 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
 
   def setNullAt(i: Int): Unit
 
+  // 更新某个字段的值
   def update(i: Int, value: Any): Unit
 
   // default implementation (slow)
