@@ -59,7 +59,11 @@ abstract class AbstractSqlParser extends ParserInterface with Logging {
     }
   }
 
-  /** Get the builder (visitor) which converts a ParseTree into an AST. */
+  /**
+   * Get the builder (visitor) which converts a ParseTree into an AST.
+   *
+   * 返回AstBuilder
+   **/
   protected def astBuilder: AstBuilder
 
   protected def parse[T](command: String)(toResult: SqlBaseParser => T): T = {

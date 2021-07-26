@@ -23,14 +23,28 @@ import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 
 /**
  * Interface for a parser.
+ *
+ * 面向用户的ParserInterface接口
  */
 trait ParserInterface {
-  /** Creates LogicalPlan for a given SQL string. */
+  /**
+   * Creates LogicalPlan for a given SQL string.
+   *
+   * 对SQL语句的解析方法
+   **/
   def parsePlan(sqlText: String): LogicalPlan
 
-  /** Creates Expression for a given SQL string. */
+  /**
+   * Creates Expression for a given SQL string.
+   *
+   * 对Expression表达式的解析方法
+   **/
   def parseExpression(sqlText: String): Expression
 
-  /** Creates TableIdentifier for a given SQL string. */
+  /**
+   * Creates TableIdentifier for a given SQL string.
+   *
+   * 对TableIdentifier数据表标识符的解析方法
+   **/
   def parseTableIdentifier(sqlText: String): TableIdentifier
 }

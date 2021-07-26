@@ -35,8 +35,12 @@ import org.apache.spark.sql.types.StructType
 
 /**
  * Concrete parser for Spark SQL statements.
+ *
+ * SparkSqlParser用于外部调用
  */
 class SparkSqlParser(conf: SQLConf) extends AbstractSqlParser {
+
+  // 依赖于SparkSqlAstBuilder，而SparkSqlAstBuilder继承自AstBuilder
   val astBuilder = new SparkSqlAstBuilder(conf)
 
   private val substitutor = new VariableSubstitution(conf)
@@ -48,6 +52,8 @@ class SparkSqlParser(conf: SQLConf) extends AbstractSqlParser {
 
 /**
  * Builder that converts an ANTLR ParseTree into a LogicalPlan/Expression/TableIdentifier.
+ *
+ * 继承AstBuilder，并在其基础上定义了一些DDL语句的访问操作，主要在SparkSqlParser中调用。
  */
 class SparkSqlAstBuilder(conf: SQLConf) extends AstBuilder {
   import org.apache.spark.sql.catalyst.parser.ParserUtils._
