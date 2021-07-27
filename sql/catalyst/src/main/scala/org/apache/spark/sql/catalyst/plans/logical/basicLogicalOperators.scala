@@ -39,10 +39,17 @@ case class ReturnAnswer(child: LogicalPlan) extends UnaryNode {
   override def output: Seq[Attribute] = child.output
 }
 
+/**
+ * 列剪裁节点
+ * @param projectList 要选取列的列表，列表中每个表达式的类型都是NamedExpression类型。
+ * @param child
+ */
 case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extends UnaryNode {
+  // 直接输出projectList中的列，不需要考虑子节点的相关信息。
   override def output: Seq[Attribute] = projectList.map(_.toAttribute)
   override def maxRows: Option[Long] = child.maxRows
 
+  // 既要满足所有表达式都已经解析，又要确认所有子节点已经解析且不包含特殊的表达式。
   override lazy val resolved: Boolean = {
     val hasSpecialExpressions = projectList.exists ( _.collect {
         case agg: AggregateExpression => agg
@@ -54,6 +61,7 @@ case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extend
     !expressions.exists(!_.resolved) && childrenResolved && !hasSpecialExpressions
   }
 
+  // 将projectList对应的别名约束与子节点中的约束整合。
   override def validConstraints: Set[Expression] =
     child.constraints.union(getAliasedConstraints(projectList))
 }
@@ -104,12 +112,18 @@ case class Generate(
   }
 }
 
+/**
+ * 过滤节点
+ * @param condition 过滤条件表达式
+ * @param child
+ */
 case class Filter(condition: Expression, child: LogicalPlan)
   extends UnaryNode with PredicateHelper {
   override def output: Seq[Attribute] = child.output
 
   override def maxRows: Option[Long] = child.maxRows
 
+  // 会将condition表达式中的谓词逻辑与子节点中的约束整合
   override protected def validConstraints: Set[Expression] = {
     val predicates = splitConjunctivePredicates(condition)
       .filterNot(SubqueryExpression.hasCorrelatedSubquery)

@@ -44,7 +44,11 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    */
   def analyzed: Boolean = _analyzed
 
-  /** Returns true if this subtree contains any streaming data sources. */
+  /**
+   * Returns true if this subtree contains any streaming data sources.
+   *
+   * 表示当前逻辑算子树中是否包含流式数据源
+   **/
   def isStreaming: Boolean = children.exists(_.isStreaming == true)
 
   /**
@@ -88,6 +92,9 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * of cartesian joins.
    *
    * [[LeafNode]]s must override this.
+   *
+   * 记录了当前节点的统计信息，例如默认实现的sizeInBytes信息，
+   * 一般来讲如果当前节点不包含子节点，则必须重载实现该方法
    */
   def statistics: Statistics = {
     if (children.isEmpty) {
@@ -101,6 +108,8 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    *
    * Any operator that a Limit can be pushed passed should override this function (e.g., Union).
    * Any operator that can push through a Limit should override this function (e.g., Project).
+   *
+   * 记录了当前节点可能计算的最大行数，一般常用于Limit算子
    */
   def maxRows: Option[Long] = None
 
@@ -110,16 +119,22 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * can override this (e.g.
    * [[org.apache.spark.sql.catalyst.analysis.UnresolvedRelation UnresolvedRelation]]
    * should return `false`).
+   *
+   * 标记该LogicalPlan是否为经过了解析
    */
   lazy val resolved: Boolean = expressions.forall(_.resolved) && childrenResolved
 
+  // 如果该逻辑算子树节点未经过解析，则输出的字符串前缀会加上单引号（'）
   override protected def statePrefix = if (!resolved) "'" else super.statePrefix
 
   /**
    * Returns true if all its children of this query plan have been resolved.
+   *
+   * 标记子节点是否已经被解析
    */
   def childrenResolved: Boolean = children.forall(_.resolved)
 
+  // EliminateSubqueryAliases方法的结果为消除了子查询别名之后的LogicalPlan
   override lazy val canonicalized: LogicalPlan = EliminateSubqueryAliases(this)
 
   /**
@@ -270,12 +285,28 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
 
   /**
    * Refreshes (or invalidates) any metadata/data cached in the plan recursively.
+   *
+   * 递归地刷新当前计划中的元数据等信息
    */
   def refresh(): Unit = children.foreach(_.refresh())
 }
 
 /**
  * A logical plan node with no children.
+ *
+ * LeafNode类型的LogicalPlan节点对应数据表和命令（Command）相关的逻辑，
+ * 因此这些LeafNode子类中有很大一部分都属于datasources包和command包。
+ * - org.apache.spark.sql.catalyst.analysis
+ * - org.apache.spark.sql.catalyst.catalog
+ * - org.apache.spark.sql.execution
+ * - org.apache.spark.sql.catalyst.plans.logical
+ * - org.apache.spark.sql.hive
+ * - org.apache.spark.sql.execution.command
+ * - org.apache.spark.sql.hive.execution
+ * - org.apache.spark.sql.execution.columnar
+ * - org.apache.spark.sql.execution.streaming
+ * - org.apache.spark.sql.execution.datasources
+ * 共有70多种。
  */
 abstract class LeafNode extends LogicalPlan {
   override final def children: Seq[LogicalPlan] = Nil
@@ -284,6 +315,8 @@ abstract class LeafNode extends LogicalPlan {
 
 /**
  * A logical plan node with single child.
+ *
+ * 常见于对数据的逻辑转换操作，包括过滤等，共有34种
  */
 abstract class UnaryNode extends LogicalPlan {
   def child: LogicalPlan
@@ -331,6 +364,9 @@ abstract class UnaryNode extends LogicalPlan {
 
 /**
  * A logical plan node with a left and right child.
+ *
+ * BinaryNode类型的逻辑算子树节点包括连接（Join）、集合操作（SetOperation）和CoGroup 3种，
+ * 其中SetOperation包括Except和Intersect两种算子。
  */
 abstract class BinaryNode extends LogicalPlan {
   def left: LogicalPlan

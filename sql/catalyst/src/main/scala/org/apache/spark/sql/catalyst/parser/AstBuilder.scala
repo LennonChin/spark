@@ -285,9 +285,11 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitQuerySpecification(
       ctx: QuerySpecificationContext): LogicalPlan = withOrigin(ctx) {
+    // 处理FromClauseContext
     val from = OneRowRelation.optional(ctx.fromClause) {
       visitFromClause(ctx.fromClause)
     }
+    // 处理Query的主要逻辑
     withQuerySpecification(ctx, from)
   }
 
@@ -303,7 +305,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       relation: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     import ctx._
 
-    // WHERE
+    // WHERE，用于解析Filter的Context
     def filter(ctx: BooleanExpressionContext, plan: LogicalPlan): LogicalPlan = {
       Filter(expression(ctx), plan)
     }
@@ -410,7 +412,9 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitFromClause(ctx: FromClauseContext): LogicalPlan = withOrigin(ctx) {
     val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left, relation) =>
+      // 生成主表的逻辑计划
       val right = plan(relation.relationPrimary)
+      // 可能有Join操作的表
       val join = right.optionalMap(left)(Join(_, _, Inner, None))
       withJoinRelations(join, relation)
     }
@@ -868,8 +872,11 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * - Greater then or Equal: '>='
    */
   override def visitComparison(ctx: ComparisonContext): Expression = withOrigin(ctx) {
+    // 处理表达式左边部分
     val left = expression(ctx.left)
+    // 处理表达式右边部分
     val right = expression(ctx.right)
+    // 处理操作符
     val operator = ctx.comparisonOperator().getChild(0).asInstanceOf[TerminalNode]
     operator.getSymbol.getType match {
       case SqlBaseParser.EQ =>
@@ -895,6 +902,9 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * {{{
    *    a + 1 IS NULL
    * }}}
+   *
+   * 检查该谓词逻辑中是否包含predicate语句（按照文法文件中的定义，predicate主要表示BETWEEN-AND、IN和LIKE/RLIKE等语句），
+   * 如果不包含predicate，直接返回访问其子节点（一般是visitComparison）得到的结果。
    */
   override def visitPredicated(ctx: PredicatedContext): Expression = withOrigin(ctx) {
     val e = expression(ctx.valueExpression)
@@ -1187,6 +1197,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
   /**
    * Create an [[UnresolvedAttribute]] expression.
+   *
+   * 根据ColumnReferenceContext节点信息生成UnresolvedAttribute表达式，其中的常数会统一封装为Literal表达式。
    */
   override def visitColumnReference(ctx: ColumnReferenceContext): Expression = withOrigin(ctx) {
     UnresolvedAttribute.quoted(ctx.getText)

@@ -31,6 +31,7 @@ import org.apache.spark.sql.types.{DataType, StructType}
 abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanType] {
   self: PlanType =>
 
+  // 具体内容由不同子节点实现
   def output: Seq[Attribute]
 
   /**
@@ -88,7 +89,11 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     case _ => Seq.empty[Attribute]
   }
 
-  // Collect aliases from expressions, so we may avoid producing recursive constraints.
+  /**
+   * Collect aliases from expressions, so we may avoid producing recursive constraints.
+   *
+   * 记录节点与子节点表达式中所有的别名信息
+   */
   private lazy val aliasMap = AttributeMap(
     (expressions ++ children.flatMap(_.expressions)).collect {
       case a: Alias => (a.toAttribute, a.child)
@@ -205,23 +210,31 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
 
   /**
    * Returns the set of attributes that are output by this node.
+   *
+   * 将output的返回值进行封装，得到AttributeSet集合类型的结果
    */
   def outputSet: AttributeSet = AttributeSet(output)
 
   /**
    * All Attributes that appear in expressions from this operator.  Note that this set does not
    * include attributes that are implicitly referenced by being passed through to the output tuple.
+   *
+   * 表示节点表达式中所涉及的所有属性集合
    */
   def references: AttributeSet = AttributeSet(expressions.flatMap(_.references))
 
   /**
    * The set of all attributes that are input to this operator by its children.
+   *
+   * 节点的输入属性对应所有子节点的输出
    */
   def inputSet: AttributeSet =
     AttributeSet(children.flatMap(_.asInstanceOf[QueryPlan[PlanType]].output))
 
   /**
    * The set of all attributes that are produced by this node.
+   *
+   * 表示该节点所产生的属性
    */
   def producedAttributes: AttributeSet = AttributeSet.empty
 
@@ -229,6 +242,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * Attributes that are referenced by expressions but not provided by this nodes children.
    * Subclasses should override this method if they produce attributes internally as it is used by
    * assertions designed to prevent the construction of invalid plans.
+   *
+   * 表示该节点表达式中涉及的但是其子节点输出中并不包含的属性
    */
   def missingInput: AttributeSet = references -- inputSet -- producedAttributes
 
@@ -286,6 +301,7 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     var changed = false
 
     @inline def transformExpressionUp(e: Expression): Expression = {
+      // 用后序遍历的方式将规则作用于所有的节点
       val newE = e.transformUp(rule)
       if (newE.fastEquals(e)) {
         e
@@ -320,7 +336,11 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     }.asInstanceOf[this.type]
   }
 
-  /** Returns all of the expressions present in this query plan operator. */
+  /**
+   * Returns all of the expressions present in this query plan operator.
+   *
+   * 得到该节点中的所有表达式列表
+   **/
   final def expressions: Seq[Expression] = {
     // Recursively find all expressions from a traversable.
     def seqToExpressions(seq: Traversable[Any]): Traversable[Expression] = seq.flatMap {
@@ -337,6 +357,7 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     }.toSeq
   }
 
+  // 对应output输出属性的schema信息
   lazy val schema: StructType = StructType.fromAttributes(output)
 
   /** Returns the output schema in the tree format. */
@@ -351,6 +372,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * A prefix string used when printing the plan.
    *
    * We use "!" to indicate an invalid plan, and "'" to indicate an unresolved plan.
+   *
+   * 在QueryPlan的默认实现中，如果该计划不可用（invalid），则前缀会用感叹号（“！”）标记。
    */
   protected def statePrefix = if (missingInput.nonEmpty && children.nonEmpty) "!" else ""
 
@@ -360,6 +383,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
 
   /**
    * All the subqueries of current plan.
+   *
+   * 默认实现该QueryPlan节点中包含的所有子查询
    */
   def subqueries: Seq[PlanType] = {
     expressions.flatMap(_.collect {
@@ -367,10 +392,13 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     })
   }
 
+  // 默认实现该QueryPlan节点中包含的所有子查询
   override protected def innerChildren: Seq[QueryPlan[_]] = subqueries
 
   /**
    * Canonicalized copy of this query plan.
+   *
+   * 直接赋值为当前的QueryPlan类
    */
   protected lazy val canonicalized: PlanType = this
 
@@ -386,6 +414,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * By default this function performs a modified version of equality that is tolerant of cosmetic
    * differences like attribute naming and or expression id differences. Operators that
    * can do better should override this function.
+   *
+   * 利用canonicalized来判断两个QueryPlan的输出数据是否相同
    */
   def sameResult(plan: PlanType): Boolean = {
     val left = this.canonicalized
@@ -398,6 +428,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
 
   /**
    * All the attributes that are used for this plan.
+   *
+   * 节点所涉及的所有属性（Attribute）列表
    */
   lazy val allAttributes: AttributeSeq = children.flatMap(_.output)
 
