@@ -20,6 +20,13 @@ package org.apache.spark.sql.catalyst.rules
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.trees.TreeNode
 
+/**
+ * 在Unresolved LogicalPlan逻辑算子树的操作（如绑定、解析、优化等）中，主要方法都是基于规则（Rule）的，
+ * 通过Scala语言模式匹配机制（Pattern-match）进行树结构的转换或节点改写。
+ *
+ * Rule是一个抽象类，子类需要复写apply(plan:TreeType)方法来制定特定的处理逻辑。
+ * @tparam TreeType
+ */
 abstract class Rule[TreeType <: TreeNode[_]] extends Logging {
 
   /** Name for this rule, automatically inferred based on class name. */

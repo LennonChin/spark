@@ -61,6 +61,7 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
 
   lazy val analyzed: LogicalPlan = {
     SparkSession.setActiveSession(sparkSession)
+    // Unresolved Logical Plan -> Analyzed Logical Plan
     sparkSession.sessionState.analyzer.execute(logical)
   }
 

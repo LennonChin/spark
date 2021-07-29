@@ -44,6 +44,13 @@ object SessionCatalog {
  * tables and functions of the Spark Session that it belongs to.
  *
  * This class must be thread-safe.
+ *
+ * @param externalCatalog 外部系统Catalog，用来管理数据库（Databases）、数据表（Tables）、数据分区（Partitions）和函数（Functions）的接口。
+ * @param globalTempViewManager 全局的临时视图管理器，对应DataFrame中常用的createGlobalTempView方法，进行跨Session的视图管理。
+ * @param functionResourceLoader 函数资源加载器，用于加载自定义函数、Hive函数相关的资源
+ * @param functionRegistry 函数注册接口，用来实现对函数的注册（Register）、查找（Lookup）和删除（Drop）等功能。
+ * @param conf Spark SQL Catalyst配置信息
+ * @param hadoopConf Hadoop配置信息
  */
 class SessionCatalog(
     externalCatalog: ExternalCatalog,
@@ -74,7 +81,11 @@ class SessionCatalog(
     this(externalCatalog, new SimpleFunctionRegistry, new SimpleCatalystConf(true))
   }
 
-  /** List of temporary tables, mapping from table name to their logical plan. */
+  /**
+   * List of temporary tables, mapping from table name to their logical plan.
+   *
+   * 管理临时表信息。
+   **/
   @GuardedBy("this")
   protected val tempTables = new mutable.HashMap[String, LogicalPlan]
 
@@ -82,6 +93,7 @@ class SessionCatalog(
   // specify the database (e.g. DROP TABLE my_table). In these cases we must first
   // check whether the temporary table or function exists, then, if not, operate on
   // the corresponding item in the current database.
+  // 当前操作所对应的数据库名称。
   @GuardedBy("this")
   protected var currentDb = formatDatabaseName(DEFAULT_DATABASE)
 
@@ -559,20 +571,26 @@ class SessionCatalog(
    */
   def lookupRelation(name: TableIdentifier, alias: Option[String] = None): LogicalPlan = {
     synchronized {
+      // 如果大小写不敏感，就将库名和表名都转换为小写，否则原样返回
       val db = formatDatabaseName(name.database.getOrElse(currentDb))
       val table = formatTableName(name.table)
       val relationAlias = alias.getOrElse(table)
+
+      // 判断库名是否是全局临时视图名
       if (db == globalTempViewManager.database) {
+        // 从全局临时视图中找
         globalTempViewManager.get(table).map { viewDef =>
           SubqueryAlias(relationAlias, viewDef, Some(name))
         }.getOrElse(throw new NoSuchTableException(db, table))
-      } else if (name.database.isDefined || !tempTables.contains(table)) {
+      } else if (name.database.isDefined || !tempTables.contains(table)) { // 非临时表
+        // 从Catalog中找
         val metadata = externalCatalog.getTable(db, table)
+        // 如果是视图，就返回Some(name)，否则返回None
         val view = Option(metadata.tableType).collect {
           case CatalogTableType.VIEW => name
         }
         SubqueryAlias(relationAlias, SimpleCatalogRelation(db, metadata), view)
-      } else {
+      } else { // 临时表
         SubqueryAlias(relationAlias, tempTables(table), Option(name))
       }
     }

@@ -730,6 +730,12 @@ case class LocalLimit(limitExpr: Expression, child: LogicalPlan) extends UnaryNo
   }
 }
 
+/**
+ * 解析UnresolvedRelation得到该LogicalPlan
+ * @param alias 别名
+ * @param child 具体获取表的LogicalPlan
+ * @param view 如果是视图，该参数才为Some，否则为None
+ */
 case class SubqueryAlias(
     alias: String,
     child: LogicalPlan,

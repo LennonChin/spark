@@ -60,7 +60,9 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
    * @param rule the function use to transform this nodes children
    */
   def resolveOperators(rule: PartialFunction[LogicalPlan, LogicalPlan]): LogicalPlan = {
+    // 如果解析过，直接返回自己
     if (!analyzed) {
+      // 将rule运用到所有子节点
       val afterRuleOnChildren = transformChildren(rule, (t, r) => t.resolveOperators(r))
       if (this fastEquals afterRuleOnChildren) {
         CurrentOrigin.withOrigin(origin) {

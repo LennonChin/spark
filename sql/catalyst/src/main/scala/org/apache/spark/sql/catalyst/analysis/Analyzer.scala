@@ -53,6 +53,11 @@ object SimpleAnalyzer extends Analyzer(
  * Provides a logical query plan analyzer, which translates [[UnresolvedAttribute]]s and
  * [[UnresolvedRelation]]s into fully typed objects using information in a
  * [[SessionCatalog]] and a [[FunctionRegistry]].
+ *
+ * @param catalog
+ * @param conf
+ * @param maxIterations 可以通过参数（spark.sql.optimizer.maxIterations）设定RuleExecutor迭代的轮数，
+ *                      默认配置为100轮，对于某些嵌套较深的特殊SQL，可以适当地增加轮数。
  */
 class Analyzer(
     catalog: SessionCatalog,
@@ -74,44 +79,90 @@ class Analyzer(
   val extendedResolutionRules: Seq[Rule[LogicalPlan]] = Nil
 
   lazy val batches: Seq[Batch] = Seq(
+    // 对节点的作用类似于替换操作。
     Batch("Substitution", fixedPoint,
+      /**
+       * 处理With语句，主要用于子查询模块化。
+       * 在遍历逻辑算子树的过程中，当匹配到With(child，relations)节点时，将子LogicalPlan替换成解析后的CTE。
+       * 由于CTE的存在，SparkSqlParser对SQL语句从左向右解析后会产生多个LogicalPlan。这条规则的作用是将多个LogicalPlan合并成一个LogicalPlan。
+       */
       CTESubstitution,
+      /**
+       * 对当前的逻辑算子树进行查找，当匹配到WithWindowDefinition(windowDefinitions，child)表达式时，
+       * 将其子节点中未解析的窗口函数表达式（Unresolved-WindowExpression）转换成窗口函数表达式（WindowExpression）。
+       */
       WindowsSubstitution,
+      /**
+       * 在Union算子节点只有一个子节点时，Union操作实际上并没有起到作用，这种情况下需要消除该Union节点。
+       * 该规则在遍历逻辑算子树过程中，匹配到Union(children)且children的数目只有1个时，将Union(children)替换为children.head节点。
+       */
       EliminateUnions,
+      /**
+       * Spark从2.0版本开始，在“Order By”和“Group By”语句中开始支持用常数来表示列的下标。
+       * 例如：“Group By 1，2”等价于“Group By A，B”语句。
+       * SubstituteUnresolvedOrdinals这条规则的作用就是根据这两个配置参数将下标替换成UnresolvedOrdinal表达式，以映射到对应的列。
+       */
       new SubstituteUnresolvedOrdinals(conf)),
+
+    // 涉及常见的数据源、数据类型、数据转换和处理操作等。
     Batch("Resolution", fixedPoint,
-      ResolveTableValuedFunctions ::
-      ResolveRelations ::
-      ResolveReferences ::
-      ResolveCreateNamedStruct ::
-      ResolveDeserializer ::
-      ResolveNewInstance ::
-      ResolveUpCast ::
-      ResolveGroupingAnalytics ::
-      ResolvePivot ::
-      ResolveOrdinalInOrderByAndGroupBy ::
-      ResolveMissingReferences ::
-      ExtractGenerator ::
-      ResolveGenerate ::
-      ResolveFunctions ::
-      ResolveAliases ::
-      ResolveSubquery ::
-      ResolveWindowOrder ::
-      ResolveWindowFrame ::
-      ResolveNaturalAndUsingJoin ::
-      ExtractWindowExpressions ::
-      GlobalAggregates ::
-      ResolveAggregateFunctions ::
-      TimeWindowing ::
-      ResolveInlineTables ::
-      TypeCoercion.typeCoercionRules ++
-      extendedResolutionRules : _*),
+      ResolveTableValuedFunctions :: // 解析可以作为数据表的函数
+      ResolveRelations :: // 解析数据表
+      ResolveReferences :: // 解析列
+      ResolveCreateNamedStruct :: // 解析结构体创建
+      ResolveDeserializer :: // 解析反序列化操作类
+      ResolveNewInstance :: // 解析新的实例
+      ResolveUpCast :: // 解析类型转换
+      ResolveGroupingAnalytics :: // 解析多维分析
+      ResolvePivot :: // 解析Pivot
+      ResolveOrdinalInOrderByAndGroupBy :: // 解析下标聚合
+      ResolveMissingReferences :: // 解析新的列
+      ExtractGenerator :: // 解析生成器
+      ResolveGenerate :: // 解析生成过程
+      ResolveFunctions :: // 解析函数
+      ResolveAliases :: // 解析别名
+      ResolveSubquery :: // 解析子查询
+      ResolveWindowOrder :: // 解析窗口函数排序
+      ResolveWindowFrame :: // 解析窗口函数
+      ResolveNaturalAndUsingJoin :: // 解析自然Join
+      ExtractWindowExpressions :: // 提取窗口函数表达式
+      GlobalAggregates :: // 解析全局聚合
+      ResolveAggregateFunctions :: // 解析式聚合函数
+      TimeWindowing :: // 解析时间窗口
+      ResolveInlineTables :: // 解析内联表
+      TypeCoercion.typeCoercionRules ++ // 解析强制类型转换
+      extendedResolutionRules : _*), // 扩展规则
+
+    /**
+     * 将LogicalPlan中非Project或非Filter算子的nondeterministic（不确定的）表达式提取出来，
+     * 然后将这些表达式放在内层的Project算子中或最终的Project算子中。
+     */
     Batch("Nondeterministic", Once,
       PullOutNondeterministic),
+
+    /**
+     * 用来对用户自定义函数进行一些特别的处理
+     * 用来处理输入数据为Null的情形，其主要思想是从上至下进行表达式的遍历（transform ExpressionsUp），
+     * 当匹配到ScalaUDF类型的表达式时，会创建If表达式来进行Null值的检查。
+     */
     Batch("UDF", Once,
       HandleNullInputsForUDF),
+
+    /**
+     * 用来统一设定LogicalPlan中表达式的nullable属性。
+     * 在DataFrame或Dataset等编程接口中，用户代码对于某些列（AttributeReference）可能会改变其nullability属性，
+     * 导致后续的判断逻辑（如isNull过滤等）中出现异常结果。
+     * 在FixNullability规则中，对解析后的LogicalPlan执行transform Expressions操作，
+     * 如果某列来自于其子节点，则其nullability值根据子节点对应的输出信息进行设置。
+     */
     Batch("FixNullability", Once,
       FixNullability),
+
+    /**
+     * 用来删除LogicalPlan中无用的别名信息。
+     * 一般情况下，逻辑算子树中仅Project、Aggregate或Window算子的最高一层表达式（分别对应project list、aggregate expressions和window expressions）才需要别名。
+     * CleanupAliases通过trim Aliases方法对表达式执行中的别名进行删除。
+     */
     Batch("Cleanup", fixedPoint,
       CleanupAliases)
   )
@@ -449,10 +500,13 @@ class Analyzer(
 
   /**
    * Replaces [[UnresolvedRelation]]s with concrete relations from the catalog.
+   *
+   * 从Catalog中解析Table信息
    */
   object ResolveRelations extends Rule[LogicalPlan] {
     private def lookupTableFromCatalog(u: UnresolvedRelation): LogicalPlan = {
       try {
+        // SubqueryAlais
         catalog.lookupRelation(u.tableIdentifier, u.alias)
       } catch {
         case _: NoSuchTableException =>
@@ -605,13 +659,15 @@ class Analyzer(
 
       case q: LogicalPlan =>
         logTrace(s"Attempting to resolve ${q.simpleString}")
-        q transformExpressionsUp  {
+        q transformExpressionsUp  { // 后序遍历操作所有子节点
+          // 解析Unresolved Attributes
           case u @ UnresolvedAttribute(nameParts) =>
             // Leave unchanged if resolution fails.  Hopefully will be resolved next round.
             val result =
               withPosition(u) { q.resolveChildren(nameParts, resolver).getOrElse(u) }
             logDebug(s"Resolving $u to $result")
             result
+          // 解析Unresolved ExtractValue
           case UnresolvedExtractValue(child, fieldExpr) if child.resolved =>
             ExtractValue(child, fieldExpr, resolver)
         }

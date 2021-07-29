@@ -634,6 +634,7 @@ object TypeCoercion {
       case e if !e.childrenResolved => e
 
       case b @ BinaryOperator(left, right) if left.dataType != right.dataType =>
+        // 找到对于左右表达式节点来讲最佳的共同数据类型。
         findTightestCommonTypeOfTwo(left.dataType, right.dataType).map { commonType =>
           if (b.inputType.acceptsType(commonType)) {
             // If the expression accepts the tightest common type, cast to that.

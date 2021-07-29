@@ -37,6 +37,8 @@ class InferFiltersFromConstraintsSuite extends PlanTest {
 
   val testRelation = LocalRelation('a.int, 'b.int, 'c.int)
 
+  // where a = 1 and a = b
+  // where a is not null and b is not null and a = b and a = 1 and b = 1
   test("filter: filter out constraints in condition") {
     val originalQuery = testRelation.where('a === 1 && 'a === 'b).analyze
     val correctAnswer = testRelation
@@ -45,6 +47,8 @@ class InferFiltersFromConstraintsSuite extends PlanTest {
     comparePlans(optimized, correctAnswer)
   }
 
+  // x join y on x.a = y.a and x.a = 1 and y.c > 5
+  // (where a is not null and a == 1) x join (where a is not null and c is not null and c > 5 and a == 1) y on x.a == y.a
   test("single inner join: filter out values on either side on equi-join keys") {
     val x = testRelation.subquery('x)
     val y = testRelation.subquery('y)

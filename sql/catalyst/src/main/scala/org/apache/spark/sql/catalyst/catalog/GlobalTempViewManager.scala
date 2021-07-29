@@ -38,7 +38,11 @@ import org.apache.spark.sql.catalyst.util.StringUtils
  */
 class GlobalTempViewManager(val database: String) {
 
-  /** List of view definitions, mapping from view name to logical plan. */
+  /** List of view definitions, mapping from view name to logical plan.
+   *
+   * Key：视图名的字符串，视图名大小写敏感
+   * Value：视图对应的LogicalPlan，一般在创建该视图时生成
+   **/
   @GuardedBy("this")
   private val viewDefinitions = new mutable.HashMap[String, LogicalPlan]
 

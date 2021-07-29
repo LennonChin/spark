@@ -50,11 +50,34 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     // in the analyzer, because they are needed for correctness (e.g. ComputeCurrentTime).
     // However, because we also use the analyzer to canonicalized queries (for view definition),
     // we do not eliminate subqueries or compute current time in the analyzer.
+    /**
+     * 涉及优化比较少，主要为了限定正确的结果
+     */
     Batch("Finish Analysis", Once,
+      /**
+       * 消除子查询别名，对应逻辑算子树中的SubqueryAlias节点。
+       * 一般来讲，Subqueries仅用于提供查询的视角范围（Scope）信息，
+       * 一旦Analyzer阶段结束，该节点就可以被移除，该优化规则直接将SubqueryAlias替换为其子节点。
+       */
       EliminateSubqueryAliases,
+      /**
+       * 表达式替换，在逻辑算子树中查找匹配RuntimeReplaceable的表达式并将其替换为能够执行的正常表达式。
+       * 这条规则通常用来对其他类型的数据库提供兼容的能力，例如，可以用“coalesce”来替换支持“nvl”的表达式。
+       */
       ReplaceExpressions,
+      /**
+       * 计算与当前时间相关的表达式，在同一条SQL语句中可能包含多个计算时间的表达式，即CurrentDate和CurrentTimestamp，且该表达式出现在多个语句中。
+       * 为避免不一致，ComputeCurrentTime对逻辑算子树中的时间函数计算一次后，将其他同样的函数替换成该计算结果。
+       */
       ComputeCurrentTime,
+      /**
+       * 获取当前数据库，在SQL语句中可能会调用CurrentDatabase函数来获取Catalog中的当前数据库，而这个方法没必要在执行阶段再进行计算。
+       * GetCurrentDatabase规则执行CurrentDatabase并得到结果，然后用此结果替换所有的CurrentDatabase表达式。
+       */
       GetCurrentDatabase(sessionCatalog),
+      /**
+       * 重写Distinct聚合操作，对于包含Distinct算子的聚合语句，这条规则将其转换为两个常规的聚合表达式。
+       */
       RewriteDistinctAggregates) ::
     //////////////////////////////////////////////////////////////////////////////////////////
     // Optimizer rules start here
@@ -65,64 +88,151 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     // - Call CombineUnions again in Batch("Operator Optimizations"),
     //   since the other rules might make two separate Unions operators adjacent.
     Batch("Union", Once,
+      /**
+       * 在逻辑算子树中，当相邻的节点都是Union算子时，可以将这些相邻的Union节点合并为一个Union节点。
+       * 在该规则中，flattenUnion是核心方法，用栈实现了节点的合并。
+       * 需要注意的是，后续的优化操作可能会将原来不相邻的Union节点变得相邻，因此在后面的规则Batch中又加入了CombineUnions这条规则。
+       */
       CombineUnions) ::
+      /**
+       * 当SQL语句包含子查询时，会在逻辑算子树上生成SubqueryExpression表达式。
+       */
     Batch("Subquery", Once,
+      /**
+       * OptimizeSubqueries优化规则在遇到SubqueryExpression表达式时，进一步递归调用Optimizer对该表达式的子计划并进行优化。
+       */
       OptimizeSubqueries) ::
+      /**
+       * 该Batch中的优化规则主要用来执行算子的替换操作。在SQL语句中，某些查询算子可以直接改写为已有的算子，避免进行重复的逻辑转换。
+       * 主要针对的是集合类型的操作算子。
+       */
     Batch("Replace Operators", fixedPoint,
+      /**
+       * 将Intersect操作算子替换为Left-Semi Join操作算子，从逻辑上来看，这两种算子是等价的。
+       * ReplaceIntersectWithSemiJoin优化规则仅适用于INTERSECT DISTINCT类型的语句，而不适用于INTERSECT ALL语句。
+       * 此外，该优化规则执行之前必须消除重复的属性，避免生成的Join条件不正确。
+       */
       ReplaceIntersectWithSemiJoin,
+      /**
+       * 将Except操作算子替换为Left-Anti Join操作算子，从逻辑上来看，这两种算子是等价的。
+       * ReplaceExceptWithAntiJoin优化规则仅适用于EXCEPT DISTINCT类型的语句，而不适用于EXCEPT ALL语句。
+       * 此外，该优化规则执行之前必须消除重复的属性，避免生成的Join条件不正确。
+       */
       ReplaceExceptWithAntiJoin,
+      /**
+       * 该优化规则会将Distinct算子转换为Aggregate语句。
+       * 在某些SQL语句中，Select直接进行Distinct操作，这种情况下可以将其直接转换为聚合操作。
+       * ReplaceDistinctWithAggregate规则会将Distinct算子替换为对应的Group By语句。
+       */
       ReplaceDistinctWithAggregate) ::
+      /**
+       * 主要用来处理聚合算子中的逻辑
+       */
     Batch("Aggregate", fixedPoint,
+      /**
+       * 该规则用来删除Group By语句中的常数，这些常数对于结果无影响，但是会导致分组数目变多。
+       * 此外，如果Group By语句中全部是常数，则会将其替换为一个简单的常数0表达式。
+       */
       RemoveLiteralFromGroupExpressions,
+      /**
+       * 该规则将重复的表达式从Group By语句中删除，同样对结果无影响。
+       */
       RemoveRepetitionFromGroupExpressions) ::
+      /**
+       * 分为3个模块：
+       *  - 算子下推（Operator Push Down）
+       *  - 算子组合（Operator Combine）
+       *  - 常量折叠与长度削减（Constant Folding and Strength Reduction）
+       */
     Batch("Operator Optimizations", fixedPoint,
-      // Operator push down
-      PushProjectionThroughUnion,
-      ReorderJoin,
-      EliminateOuterJoin,
-      PushPredicateThroughJoin,
-      PushDownPredicate,
-      LimitPushDown,
-      ColumnPruning,
-      InferFiltersFromConstraints,
-      // Operator combine
-      CollapseRepartition,
-      CollapseProject,
-      CollapseWindow,
-      CombineFilters,
-      CombineLimits,
-      CombineUnions,
-      // Constant folding and strength reduction
-      NullPropagation,
-      FoldablePropagation,
-      OptimizeIn(conf),
-      ConstantFolding,
-      ReorderAssociativeOperator,
-      LikeSimplification,
-      BooleanSimplification,
-      SimplifyConditionals,
-      RemoveDispensableExpressions,
-      SimplifyBinaryComparison,
-      PruneFilters,
-      EliminateSorts,
-      SimplifyCasts,
-      SimplifyCaseConversionExpressions,
-      RewriteCorrelatedScalarSubquery,
-      EliminateSerialization,
-      RemoveAliasOnlyProject) ::
+      // Operator push down，算子下推
+      PushProjectionThroughUnion, // 列剪裁下推
+      ReorderJoin, // Join顺序优化
+      EliminateOuterJoin, // Outer Join消除
+      PushPredicateThroughJoin, // 谓词下推到Join算子
+      PushDownPredicate, // 谓词下推
+      LimitPushDown, // Limit算子下推
+      ColumnPruning, // 列剪裁
+      InferFiltersFromConstraints, // 约束条件提取
+      // Operator combine，算子组合
+      CollapseRepartition, // 重分区组合
+      CollapseProject, // 投影算子组合
+      CollapseWindow, // Window组合
+      CombineFilters, // 过滤条件组合
+      CombineLimits, // Limit操作组合
+      CombineUnions, // Union算子组合
+      // Constant folding and strength reduction，常量折叠及长度削减
+      NullPropagation, // Null提取
+      FoldablePropagation, // 可折叠算子提取
+      OptimizeIn(conf), // In操作优化
+      ConstantFolding, // 常数折叠
+      ReorderAssociativeOperator, // 重排序关联算子优化
+      LikeSimplification, // Like算子简化
+      BooleanSimplification, // Boolean算子简化
+      SimplifyConditionals, // 条件简化
+      RemoveDispensableExpressions, // Dispensable表达式消除
+      SimplifyBinaryComparison, // 比较算子简化
+      PruneFilters, // 过滤条件剪裁
+      EliminateSorts, // 排序算子消除
+      SimplifyCasts, // Cast算子简化
+      SimplifyCaseConversionExpressions, // case表达式简化
+      RewriteCorrelatedScalarSubquery, // 依赖子查询重写
+      EliminateSerialization, // 序列化消除
+      RemoveAliasOnlyProject) :: // 消除别名
     Batch("Check Cartesian Products", Once,
+      /**
+       * 检测逻辑算子树中是否存在笛卡儿积类型的Join操作。
+       * 如果存在这样的操作，而SQL语句中没有显示地使用cross join表达式，则会抛出异常。
+       * CheckCartesianProducts规则必须在ReorderJoin规则执行之后才能执行，确保所有的Join条件收集完毕。
+       * 需要注意的是，当“spark.sql.crossJoin.enabled”参数设置为true时，该规则会被忽略。
+       */
       CheckCartesianProducts(conf)) ::
     Batch("Decimal Optimizations", fixedPoint,
+      /**
+       * 处理聚合操作中与Decimal类型相关的问题。
+       * 一般情况下，如果聚合查询中涉及浮点数的精度处理，性能就会受到很大的影响。
+       * 对于固定精度的Decimal类型，DecimalAggregates规则将其当作unscaled Long类型来执行，这样可以加速聚合操作的速度。
+       */
       DecimalAggregates) ::
     Batch("Typed Filter Optimization", fixedPoint,
+      /**
+       * 对特定情况下的过滤条件进行合并。
+       * 当逻辑算子树中存在两个TypedFilter过滤条件且针对同类型的对象条件时，CombineTypedFilters优化规则会将它们合并到同一个过滤函数中。
+       */
       CombineTypedFilters) ::
+      /**
+       * 主要用来优化与LocalRelation相关的逻辑算子树
+       */
     Batch("LocalRelation", fixedPoint,
+      /**
+       * 将LocalRelation上的本地操作（不涉及数据交互）转换为另一个LocalRelation，目前该规则实现较为简单，仅处理Project投影操作。
+       */
       ConvertToLocalRelation,
+      /**
+       * 将包含空的LocalRelation进行折叠。
+       */
       PropagateEmptyRelation) ::
+      /**
+       * 用来对生成的代码进行优化。
+       */
     Batch("OptimizeCodegen", Once,
+      /**
+       * 主要针对的是case when语句，当case when语句中的分支数目不超过配置中的最大数目时，该表达式才能执行代码生成。
+       */
       OptimizeCodegen(conf)) ::
+      /**
+       * 优化子查询
+       */
     Batch("RewriteSubquery", Once,
+      /**
+       * 将特定的子查询谓词逻辑转换为left-semi/anti join操作。其中，
+       * - EXISTS和NOT EXISTS算子分别对应semi和anti类型的Join，过滤条件会被当作Join的条件；
+       * - IN和NOT IN也分别对应semi和anti类型的Join，过滤条件和选择的列都会被当作join的条件。
+       */
       RewritePredicateSubquery,
+      /**
+       * 将两个相邻的Project算子组合在一起并执行别名替换，整合成一个统一的表达式。
+       */
       CollapseProject) :: Nil
   }
 
@@ -132,6 +242,7 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
   object OptimizeSubqueries extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan transformAllExpressions {
       case s: SubqueryExpression =>
+        // 进一步优化子查询
         s.withNewPlan(Optimizer.this.execute(s.plan))
     }
   }

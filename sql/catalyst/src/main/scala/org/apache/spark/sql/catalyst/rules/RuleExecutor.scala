@@ -43,6 +43,13 @@ object RuleExecutor {
   }
 }
 
+/**
+ * 有了各种具体Rule规则后，还需要驱动程序来调用这些规则，在Catalyst中这个功能由RuleExecutor提供。
+ * 凡是涉及树型结构的转换过程（如Analyzer逻辑算子树分析过程、Optimizer逻辑算子树的优化过程和后续物理算子树的生成过程等），
+ * 都要实施规则匹配和节点处理，都继承自RuleExecutor[TreeType]抽象类。
+ *
+ * @tparam TreeType
+ */
 abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
 
   /**
@@ -57,20 +64,34 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
   /** A strategy that runs until fix point or maxIterations times, whichever comes first. */
   case class FixedPoint(maxIterations: Int) extends Strategy
 
-  /** A batch of rules. */
+  /**
+   * A batch of rules.
+   *
+   * 每个Batch代表一套规则，配备一个策略，该策略说明了迭代次数（一次还是多次）。
+   **/
   protected case class Batch(name: String, strategy: Strategy, rules: Rule[TreeType]*)
 
-  /** Defines a sequence of rule batches, to be overridden by the implementation. */
+  /**
+   * Defines a sequence of rule batches, to be overridden by the implementation.
+   *
+   * 该RuleExecutor的处理步骤。
+   * 每个Batch代表一套规则，配备一个策略，该策略说明了迭代次数（一次还是多次）。
+   **/
   protected def batches: Seq[Batch]
 
 
   /**
    * Executes the batches of rules defined by the subclass. The batches are executed serially
    * using the defined execution strategy. Within each batch, rules are also executed serially.
+   *
+   * 按照batches顺序和batch内的Rules顺序，对传入的plan里的节点进行迭代处理，处理逻辑由具体Rule子类实现。
    */
   def execute(plan: TreeType): TreeType = {
     var curPlan = plan
 
+    /**
+     * Substitution(100) -> Resolution(100) -> Nondeterministic(1) -> UDF(1) -> FixNullability(1) -> Cleanup(100)
+     */
     batches.foreach { batch =>
       val batchStartPlan = curPlan
       var iteration = 1
@@ -79,11 +100,26 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
 
       // Run until fix point (or the max number of iterations as specified in the strategy.
       while (continue) {
+        // 此处的foldLeft具体逻辑如下：
+        // foldLeft(TreeNode) {
+        //    (TreeNode, Rule) => {
+        //        使用Rule的apply方法将Rule运用到TreeNode上，
+        //        返回TreeNode
+        //    }
+        // }
+        // foldLeft最终返回值为TreeNode，且LogicalPlan继承自TreeNode
         curPlan = batch.rules.foldLeft(curPlan) {
           case (plan, rule) =>
             val startTime = System.nanoTime()
+            /**
+             * 作用Rule到LogicalPlan上
+             * 在LogicalPlan中，还会将Rule递归作用到自己的子节点上
+             * 返回解析后的LogicalPlan
+             */
             val result = rule(plan)
             val runTime = System.nanoTime() - startTime
+
+            // 记录时间
             RuleExecutor.timeMap.addAndGet(rule.ruleName, runTime)
 
             if (!result.fastEquals(plan)) {
@@ -96,7 +132,13 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
 
             result
         }
+
+        // 遍历次数 + 1
         iteration += 1
+        /**
+         * 如果遍历次数大于Batch的策略最大次数，就会停止while遍历
+         * 下列if分支内仅仅是打印日志
+         */
         if (iteration > batch.strategy.maxIterations) {
           // Only log if this is a rule that is supposed to run more than once.
           if (iteration != 2) {
@@ -116,7 +158,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
           continue = false
         }
         lastPlan = curPlan
-      }
+      } // end while
 
       if (!batchStartPlan.fastEquals(curPlan)) {
         logDebug(
@@ -127,7 +169,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
       } else {
         logTrace(s"Batch ${batch.name} has no effect.")
       }
-    }
+    } // end batches.foreach
 
     curPlan
   }
