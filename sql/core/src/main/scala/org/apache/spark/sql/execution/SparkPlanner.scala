@@ -32,17 +32,19 @@ class SparkPlanner(
 
   def numPartitions: Int = conf.numShufflePartitions
 
+  // 提供给plan方法应用的策略集合
   def strategies: Seq[Strategy] =
       extraStrategies ++ (
-      FileSourceStrategy ::
-      DataSourceStrategy ::
-      DDLStrategy ::
-      SpecialLimits ::
-      Aggregation ::
-      JoinSelection ::
-      InMemoryScans ::
-      BasicOperators :: Nil)
+      FileSourceStrategy :: // 数据文件扫描计划
+      DataSourceStrategy :: // 各种数据源相关的计划
+      DDLStrategy :: // DDL操作执行计划
+      SpecialLimits :: // 特殊Limit操作的执行计划
+      Aggregation :: // 聚合算子相关的执行计划
+      JoinSelection :: // Join操作相关的执行计划
+      InMemoryScans :: // 内存数据表扫描计划
+      BasicOperators :: Nil) // 对基本算子生成的执行计划
 
+  // 如果是PlanLater则转换为Seq[(SparkPlan, LogicalPlan)]类型
   override protected def collectPlaceholders(plan: SparkPlan): Seq[(SparkPlan, LogicalPlan)] = {
     plan.collect {
       case placeholder @ PlanLater(logicalPlan) => placeholder -> logicalPlan

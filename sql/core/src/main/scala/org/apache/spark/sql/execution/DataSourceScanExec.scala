@@ -131,6 +131,8 @@ case class RowDataSourceScanExec(
 /**
  * Physical plan node for scanning data from HadoopFsRelations.
  *
+ * 根据数据表所在的源文件生成FileScanRDD。
+ *
  * @param relation The file-based relation to scan.
  * @param output Output attributes of the scan.
  * @param outputSchema Output schema of the scan.
@@ -158,14 +160,16 @@ case class FileSourceScanExec(
 
   @transient private lazy val selectedPartitions = relation.location.listFiles(partitionFilters)
 
+  // 覆盖了父类的outputPartitioning和outputOrdering
   override val (outputPartitioning, outputOrdering): (Partitioning, Seq[SortOrder]) = {
+    // 判断是否开启分桶，如果是则获取具体的分桶信息
     val bucketSpec = if (relation.sparkSession.sessionState.conf.bucketingEnabled) {
       relation.bucketSpec
     } else {
       None
     }
     bucketSpec match {
-      case Some(spec) =>
+      case Some(spec) => // 开启分桶情况下
         // For bucketed columns:
         // -----------------------
         // `HashPartitioning` would be used only when:
@@ -188,12 +192,16 @@ case class FileSourceScanExec(
         def toAttribute(colName: String): Option[Attribute] =
           output.find(_.name == colName)
 
+        // 从具体的输出字段及指定的分桶信息中，获取所有分桶字段
         val bucketColumns = spec.bucketColumnNames.flatMap(n => toAttribute(n))
+        // 分桶字段与字体的字段信息是对的上的
         if (bucketColumns.size == spec.bucketColumnNames.size) {
+          // 基于Hash的Partitioning，表达式是分桶字段，分区数是分桶数
           val partitioning = HashPartitioning(bucketColumns, spec.numBuckets)
+          // 获取分桶内的排序字段
           val sortColumns =
             spec.sortColumnNames.map(x => toAttribute(x)).takeWhile(x => x.isDefined).map(_.get)
-
+          // 计算排序表达式
           val sortOrder = if (sortColumns.nonEmpty) {
             // In case of bucketing, its possible to have multiple files belonging to the
             // same bucket in a given relation. Each of these files are locally sorted
@@ -201,12 +209,15 @@ case class FileSourceScanExec(
             // the RDD partition will not be sorted even if the relation has sort columns set
             // Current solution is to check if all the buckets have a single file in it
 
+            // 所有选择的分区的文件
             val files = selectedPartitions.flatMap(partition => partition.files)
+            // 从文件上获取分桶ID并进行分区，得到的结果：(分桶ID, List(文件))
             val bucketToFilesGrouping =
               files.map(_.getPath.getName).groupBy(file => BucketingUtils.getBucketId(file))
+            // 如果所有的分桶都只有一个文件
             val singleFilePartitions = bucketToFilesGrouping.forall(p => p._2.length <= 1)
 
-            if (singleFilePartitions) {
+            if (singleFilePartitions) { // 只有在每个分桶只有一个文件的情况下才需要数据排序
               // TODO Currently Spark does not support writing columns sorting in descending order
               // so using Ascending order. This can be fixed in future
               sortColumns.map(attribute => SortOrder(attribute, Ascending))
@@ -216,11 +227,12 @@ case class FileSourceScanExec(
           } else {
             Nil
           }
+          // HashPartitioning分区，分区内以sortOrder排序
           (partitioning, sortOrder)
         } else {
           (UnknownPartitioning(0), Nil)
         }
-      case _ =>
+      case _ => // 未开启分桶的情况下
         (UnknownPartitioning(0), Nil)
     }
   }

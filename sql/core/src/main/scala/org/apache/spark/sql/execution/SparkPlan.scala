@@ -41,7 +41,11 @@ import org.apache.spark.util.ThreadUtils
  *
  * The naming convention is that physical operators end with "Exec" suffix, e.g. [[ProjectExec]].
  *
- * 物理算子树SparkPlan和Spark执行层紧密相关，当Catalyst应用到其他计算模型时，可以进行相应的适配修改。
+ * 物理算子树SparkPlan和Spark执行层紧密相关，当Catalyst应用到其他计算模型时，可以进行相应的适配修改。大约65种。
+ *  - LeafExecNode：叶子节点类型的物理执行计划不存在子节点。物理执行计划中与数据源相关的节点都属于该类型。
+ *  - UnaryExecNode：UnaryExecNode类型的物理执行计划的节点是一元的，意味着只包含1个子节点。共有37种。
+ *  - BinaryExecNode：BinaryExecNode类型的SparkPlan具有两个子节点，这种二元类型的物理执行计划在Spark SQL中共定义了6种。
+ *  - Others：其他类型
  */
 abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializable {
 
@@ -72,11 +76,19 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
 
   /**
    * Return all metadata that describes more details of this SparkPlan.
+   *
+   * 元数据，一般情况下，元数据主要用于描述数据源的一些基本信息，例如数据文件的格式、存储路径等。
+   * 目前只有FileSourceScanExec和RowDataSourceScanExec两种叶子节点类型的SparkPlan对其进行了重载实现。
    */
   def metadata: Map[String, String] = Map.empty
 
   /**
    * Return all metrics containing metrics of this SparkPlan.
+   *
+   * 指标信息，Metrics能够记录各种信息，为应用的诊断和优化提供基础。
+   * 目前，Spark SQL中共有27个SparkPlan重载实现了该方法。例如，
+   *    - FilterExec中添加了“numOutputRows”指标，记录输出的数据数目，该指标会随着对应的SparkPlan执行而计算；
+   *    - ShuffleExchange中添加了“dataSize”指标，能够记录进行重新分区操作过程中的数据总量。
    */
   def metrics: Map[String, SQLMetric] = Map.empty
 
@@ -381,6 +393,12 @@ object SparkPlan {
     ThreadUtils.newDaemonCachedThreadPool("subquery", 16))
 }
 
+/**
+ * 叶子节点类型的物理执行计划不存在子节点。
+ * 物理执行计划中与数据源相关的节点都属于该类型。
+ * 在Spark SQL中，叶子节点类型的物理执行计划共有13种。
+ * LeafExecNode类型的SparkPlan负责对初始RDD的创建。
+ */
 trait LeafExecNode extends SparkPlan {
   override final def children: Seq[SparkPlan] = Nil
   override def producedAttributes: AttributeSet = outputSet

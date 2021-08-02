@@ -135,16 +135,19 @@ case class InSubquery(
 
 /**
  * Plans scalar subqueries from that are present in the given [[SparkPlan]].
+ *
+ * 遍历物理算子树中的所有表达式，碰到ScalarSubquery或PredicateSubquery表达式时，
+ * 进入子查询中的逻辑，递归得到子查询的物理执行计划（executedPlan），然后封装为ScalarSubquery和InSubquery表达式。
  */
 case class PlanSubqueries(sparkSession: SparkSession) extends Rule[SparkPlan] {
   def apply(plan: SparkPlan): SparkPlan = {
     plan.transformAllExpressions {
-      case subquery: expressions.ScalarSubquery =>
+      case subquery: expressions.ScalarSubquery => // 标量子查询
         val executedPlan = new QueryExecution(sparkSession, subquery.plan).executedPlan
         ScalarSubquery(
           SubqueryExec(s"subquery${subquery.exprId.id}", executedPlan),
           subquery.exprId)
-      case expressions.PredicateSubquery(query, Seq(e: Expression), _, exprId) =>
+      case expressions.PredicateSubquery(query, Seq(e: Expression), _, exprId) => // 过滤谓词
         val executedPlan = new QueryExecution(sparkSession, query).executedPlan
         InSubquery(e, SubqueryExec(s"subquery${exprId.id}", executedPlan), exprId)
     }

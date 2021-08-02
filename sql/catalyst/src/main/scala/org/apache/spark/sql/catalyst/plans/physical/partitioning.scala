@@ -34,12 +34,16 @@ sealed trait Distribution
 
 /**
  * Represents a distribution where no promises are made about co-location of data.
+ *
+ * 未指定分布，无需确定数据元组之间的位置关系。
  */
 case object UnspecifiedDistribution extends Distribution
 
 /**
  * Represents a distribution that only has a single partition and all tuples of the dataset
  * are co-located.
+ *
+ * 只有一个分区，所有的数据元组存放在一起（Co-located）。
  */
 case object AllTuples extends Distribution
 
@@ -48,6 +52,9 @@ case object AllTuples extends Distribution
  * [[Expression Expressions]] will be co-located. Based on the context, this
  * can mean such tuples are either co-located in the same partition or they will be contiguous
  * within a single partition.
+ *
+ * @param clustering 起到了哈希函数的效果，数据经过clustering计算后，相同value的数据元组会被存放在一起（Co-located）。
+ *                   如果有多个分区的情况，则相同数据会被存放在同一个分区中；如果只能是单个分区，则相同的数据会在分区内连续存放。
  */
 case class ClusteredDistribution(clustering: Seq[Expression]) extends Distribution {
   require(
@@ -63,6 +70,10 @@ case class ClusteredDistribution(clustering: Seq[Expression]) extends Distributi
  * [[ClusteredDistribution]] as an ordering will ensure that tuples that share the
  * same value for the ordering expressions are contiguous and will never be split across
  * partitions.
+ *
+ * 该分布意味着数据元组会根据ordering计算后的结果排序。
+ *
+ * @param ordering
  */
 case class OrderedDistribution(ordering: Seq[SortOrder]) extends Distribution {
   require(
@@ -78,6 +89,10 @@ case class OrderedDistribution(ordering: Seq[SortOrder]) extends Distribution {
 /**
  * Represents data where tuples are broadcasted to every node. It is quite common that the
  * entire set of tuples is transformed into different data structure.
+ *
+ * 广播分布，数据会被广播到所有节点上
+ *
+ * @param mode 广播模式
  */
 case class BroadcastDistribution(mode: BroadcastMode) extends Distribution
 
@@ -87,10 +102,10 @@ case class BroadcastDistribution(mode: BroadcastMode) extends Distribution
  * target partitionings, and [[Distribution]]s. These relations are described more precisely in
  * their individual method docs, but at a high level:
  *
- *  - `satisfies` is a relationship between partitionings and distributions.
- *  - `compatibleWith` is relationships between an operator's child output partitionings.
+ *  - `satisfies` is a relationship between partitionings and distributions.目标Partitioning和Distribution之间
+ *  - `compatibleWith` is relationships between an operator's child output partitionings. 两个子Partitioning之间
  *  - `guarantees` is a relationship between a child's existing output partitioning and a target
- *     output partitioning.
+ *     output partitioning. 目标Partitioning和子Partitioning之间
  *
  *  Diagrammatically:
  *
@@ -111,9 +126,14 @@ case class BroadcastDistribution(mode: BroadcastMode) extends Distribution
  *       |            |
  *       +------------+
  *
+ * 定义了一个物理算子输出数据的分区方式，具体包括子Partitionging之间、目标Partitioning和Distribution之间的关系。
  */
 sealed trait Partitioning {
-  /** Returns the number of partitions that the data is split across */
+  /**
+   * Returns the number of partitions that the data is split across
+   *
+   * 该SparkPlan输出RDD的分区的数目。
+   **/
   val numPartitions: Int
 
   /**
@@ -121,6 +141,9 @@ sealed trait Partitioning {
    * to satisfy the partitioning scheme mandated by the `required` [[Distribution]],
    * i.e. the current dataset does not need to be re-partitioned for the `required`
    * Distribution (it is possible that tuples within a partition need to be reorganized).
+   *
+   * 当前的Partitioning操作能否得到所需的数据分布（Required）。
+   * 当不满足时（结果为false），一般需要进行repartition操作，对数据进行重新组织。
    */
   def satisfies(required: Distribution): Boolean
 
@@ -138,6 +161,9 @@ sealed trait Partitioning {
    *
    * Put another way, two partitionings are compatible with each other if they satisfy all of the
    * same distribution guarantees.
+   *
+   * 当存在多个子节点时，需要判断不同的子节点的分区操作是否兼容。
+   * 直观地看，只有当两个Partitioning能够将相同key的数据分发到相同的分区时，才能够兼容。
    */
   def compatibleWith(other: Partitioning): Boolean
 
@@ -169,6 +195,10 @@ sealed trait Partitioning {
    *
    * Another way to think about `guarantees`: if `A.guarantees(B)`, then any partitioning of rows
    * produced by `A` could have also been produced by `B`.
+   *
+   * 如果A.gurantees(B)能够为真，那么任何A进行分区操作所产生的数据行也能够被B产生。
+   * 这样，B就不需要再进行重分区操作。该方法主要用来避免冗余的重分区操作带来的性能代价。
+   * 在默认情况下，一个Partitioning仅能够gurantee（保证）等于它本身的Partitioning（相同的分区数目和相同的分区策略等）。
    */
   def guarantees(other: Partitioning): Boolean = this == other
 }
@@ -177,18 +207,24 @@ object Partitioning {
   def allCompatible(partitionings: Seq[Partitioning]): Boolean = {
     // Note: this assumes transitivity
     partitionings.sliding(2).map {
-      case Seq(a) => true
-      case Seq(a, b) =>
+      case Seq(a) => true // 仅1个Partitioning，直接返回true
+      case Seq(a, b) => // 否则需要滑动依次判断
         if (a.numPartitions != b.numPartitions) {
+          // a不兼容b，且b不兼容a
           assert(!a.compatibleWith(b) && !b.compatibleWith(a))
           false
         } else {
+          // a兼容b且b兼容a
           a.compatibleWith(b) && b.compatibleWith(a)
         }
     }.forall(_ == true)
   }
 }
 
+/**
+ * 不进行分区。
+ * @param numPartitions
+ */
 case class UnknownPartitioning(numPartitions: Int) extends Partitioning {
   override def satisfies(required: Distribution): Boolean = required match {
     case UnspecifiedDistribution => true
@@ -204,6 +240,8 @@ case class UnknownPartitioning(numPartitions: Int) extends Partitioning {
  * Represents a partitioning where rows are distributed evenly across output partitions
  * by starting from a random target partition number and distributing rows in a round-robin
  * fashion. This partitioning is used when implementing the DataFrame.repartition() operator.
+ *
+ * 在1 ~ numPartitions范围内轮询方式分区
  */
 case class RoundRobinPartitioning(numPartitions: Int) extends Partitioning {
   override def satisfies(required: Distribution): Boolean = required match {
@@ -233,6 +271,8 @@ case object SinglePartition extends Partitioning {
  * Represents a partitioning where rows are split up across partitions based on the hash
  * of `expressions`.  All rows where `expressions` evaluate to the same values are guaranteed to be
  * in the same partition.
+ *
+ * 基于哈希的分区方式
  */
 case class HashPartitioning(expressions: Seq[Expression], numPartitions: Int)
   extends Expression with Partitioning with Unevaluable {
@@ -276,6 +316,8 @@ case class HashPartitioning(expressions: Seq[Expression], numPartitions: Int)
  *
  * This class extends expression primarily so that transformations over expression will descend
  * into its child.
+ *
+ * 基于范围的分区方式
  */
 case class RangePartitioning(ordering: Seq[SortOrder], numPartitions: Int)
   extends Expression with Partitioning with Unevaluable {
@@ -317,6 +359,8 @@ case class RangePartitioning(ordering: Seq[SortOrder], numPartitions: Int)
  * `HashPartitioning(B.key2)`. It is also worth noting that `partitionings`
  * in this collection do not need to be equivalent, which is useful for
  * Outer Join operators.
+ *
+ * 分区方式的集合，描述物理算子的输出
  */
 case class PartitioningCollection(partitionings: Seq[Partitioning])
   extends Expression with Partitioning with Unevaluable {

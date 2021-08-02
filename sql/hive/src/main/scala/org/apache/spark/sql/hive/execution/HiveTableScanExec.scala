@@ -39,6 +39,8 @@ import org.apache.spark.util.Utils
 /**
  * The Hive table scan operator.  Column and partition pruning are both handled.
  *
+ * 根据Hive数据表存储的HDFS信息直接生成HadoopRDD
+ *
  * @param requestedAttributes Attributes to be fetched from the Hive table.
  * @param relation The Hive table be be scanned.
  * @param partitionPruningPred An optional partition pruning predicate for partitioned table.

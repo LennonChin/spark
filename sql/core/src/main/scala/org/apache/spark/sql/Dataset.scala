@@ -60,6 +60,7 @@ private[sql] object Dataset {
 
   // 用于将逻辑执行计划LogicalPlan转换为泛型是Row的Dataset（即DataFrame）
   def ofRows(sparkSession: SparkSession, logicalPlan: LogicalPlan): DataFrame = {
+    // 创建QueryExecution，并执行其assertAnalyzed()方法
     val qe = sparkSession.sessionState.executePlan(logicalPlan)
     qe.assertAnalyzed()
     new Dataset[Row](sparkSession, qe, RowEncoder(qe.analyzed.schema))

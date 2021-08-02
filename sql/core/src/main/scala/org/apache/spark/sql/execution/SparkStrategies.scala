@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.plans._
 import org.apache.spark.sql.catalyst.plans.logical.{BroadcastHint, EventTimeWatermark, LogicalPlan}
 import org.apache.spark.sql.catalyst.plans.physical._
 import org.apache.spark.sql.execution
+import org.apache.spark.sql.execution.aggregate.AggUtils
 import org.apache.spark.sql.execution.columnar.{InMemoryRelation, InMemoryTableScanExec}
 import org.apache.spark.sql.execution.command._
 import org.apache.spark.sql.execution.datasources._
@@ -41,12 +42,19 @@ import org.apache.spark.sql.streaming.StreamingQuery
  * with the query planner and is not designed to be stable across spark releases.  Developers
  * writing libraries should instead consider using the stable APIs provided in
  * [[org.apache.spark.sql.sources]]
+ *
+ * Strategy是SparkStrategy的别名，see [[Strategy]]
  */
 abstract class SparkStrategy extends GenericStrategy[SparkPlan] {
 
   override protected def planLater(plan: LogicalPlan): SparkPlan = PlanLater(plan)
 }
 
+/**
+ * doExecute()方法没有实现，表示不支持执行，所起到的作用仅仅是占位，等待后续步骤处理。
+ *
+ * @param plan
+ */
 case class PlanLater(plan: LogicalPlan) extends LeafExecNode {
 
   override def output: Seq[Attribute] = plan.output
@@ -56,6 +64,9 @@ case class PlanLater(plan: LogicalPlan) extends LeafExecNode {
   }
 }
 
+/**
+ * 内部提供一批SparkPlanner会用到的各种策略（Strategy）实现
+ */
 abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
   self: SparkPlanner =>
 
@@ -234,7 +245,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       case PhysicalAggregation(
         namedGroupingExpressions, aggregateExpressions, rewrittenResultExpressions, child) =>
 
-        aggregate.AggUtils.planStreamingAggregation(
+        AggUtils.planStreamingAggregation(
           namedGroupingExpressions,
           aggregateExpressions,
           rewrittenResultExpressions,
@@ -267,20 +278,20 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
               sys.error("Distinct columns cannot exist in Aggregate operator containing " +
                 "aggregate functions which don't support partial aggregation.")
             } else {
-              aggregate.AggUtils.planAggregateWithoutPartial(
+              AggUtils.planAggregateWithoutPartial(
                 groupingExpressions,
                 aggregateExpressions,
                 resultExpressions,
                 planLater(child))
             }
           } else if (functionsWithDistinct.isEmpty) {
-            aggregate.AggUtils.planAggregateWithoutDistinct(
+            AggUtils.planAggregateWithoutDistinct(
               groupingExpressions,
               aggregateExpressions,
               resultExpressions,
               planLater(child))
           } else {
-            aggregate.AggUtils.planAggregateWithOneDistinct(
+            AggUtils.planAggregateWithOneDistinct(
               groupingExpressions,
               functionsWithDistinct,
               functionsWithoutDistinct,
@@ -296,9 +307,15 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
   protected lazy val singleRowRdd = sparkContext.parallelize(Seq(InternalRow()), 1)
 
+  /**
+   * InMemoryScans主要针对的是InMemoryRelation这个LogicalPlan节点，
+   * 匹配PhysicalOperation这个模式，最终生成InMemoryTableScanExec，
+   * 并调用SparkPlanner中的pruneFilterProject方法对其进行过滤和列剪裁。
+   */
   object InMemoryScans extends Strategy {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
       case PhysicalOperation(projectList, filters, mem: InMemoryRelation) =>
+        // 进行过滤和列剪裁
         pruneFilterProject(
           projectList,
           filters,
@@ -325,6 +342,10 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
   }
 
   // Can we automate these 'pass through' operations?
+  /**
+   * 针对各种基本操作类型的LogicalPlan节点，例如排序、过滤等，
+   * 这种情况下，一般一对一地进行映射即可（例如，Sort逻辑节点映射为SortExec物理计划）。
+   */
   object BasicOperators extends Strategy {
     def numPartitions: Int = self.numPartitions
 
@@ -421,6 +442,10 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
     }
   }
 
+  /**
+   * DDLStrategy在Spark SQL中仅针对CreateTable与CreateTempViewUsing这两种类型的节点，
+   * 这两种情况都直接生成ExecutedCommandExec类型的物理计划。
+   */
   object DDLStrategy extends Strategy {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
       case CreateTable(tableDesc, mode, None)

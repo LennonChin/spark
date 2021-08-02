@@ -66,10 +66,22 @@ abstract class LogicalPlan extends QueryPlan[LogicalPlan] with Logging {
       val afterRuleOnChildren = transformChildren(rule, (t, r) => t.resolveOperators(r))
       if (this fastEquals afterRuleOnChildren) {
         CurrentOrigin.withOrigin(origin) {
+          /**
+           * rule是PartialFunction[LogicalPlan, LogicalPlan]偏函数，
+           * applyOrElse的第二个参数是在rule无法匹配第一个参数时的备选函数
+           * 此处的identity[LogicalPlan]是传递的函数参数，即LogicalPlan => LogicalPlan类型的函数参数
+           * 代表的意思是，如果rule无法匹配this并执行规则，则直接返回this
+           */
           rule.applyOrElse(this, identity[LogicalPlan])
         }
       } else {
         CurrentOrigin.withOrigin(origin) {
+          /**
+           * rule是PartialFunction[LogicalPlan, LogicalPlan]偏函数，
+           * applyOrElse的第二个参数是在rule无法匹配第一个参数时的备选函数
+           * 此处的identity[LogicalPlan]是传递的函数参数，即LogicalPlan => LogicalPlan类型的函数参数
+           * 代表的意思是，如果rule无法匹配afterRuleOnChildren并执行规则，则直接返回afterRuleOnChildren
+           */
           rule.applyOrElse(afterRuleOnChildren, identity[LogicalPlan])
         }
       }

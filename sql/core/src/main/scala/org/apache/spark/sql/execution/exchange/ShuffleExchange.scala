@@ -118,7 +118,9 @@ case class ShuffleExchange(
           assert(shuffleRDD.partitions.length == newPartitioning.numPartitions)
           shuffleRDD
         case None =>
+          // return ShuffleDependency
           val shuffleDependency = prepareShuffleDependency()
+          // return ShuffledRowRDD
           preparePostShuffleRDD(shuffleDependency)
       }
     }

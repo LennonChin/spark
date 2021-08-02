@@ -41,7 +41,7 @@ package object sql {
    */
   @DeveloperApi
   @InterfaceStability.Unstable
-  type Strategy = SparkStrategy
+  type Strategy = SparkStrategy // 别名
 
   type DataFrame = Dataset[Row]
 }

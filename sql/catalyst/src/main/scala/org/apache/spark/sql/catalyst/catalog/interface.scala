@@ -122,9 +122,9 @@ case class CatalogTablePartition(
  * Bucketing is a technology for decomposing data sets into more manageable parts, and the number
  * of buckets is fixed so it does not fluctuate with data.
  *
- * @param numBuckets number of buckets.
- * @param bucketColumnNames the names of the columns that used to generate the bucket id.
- * @param sortColumnNames the names of the columns that used to sort data in each bucket.
+ * @param numBuckets number of buckets. 分桶数量
+ * @param bucketColumnNames the names of the columns that used to generate the bucket id. 分桶字段名
+ * @param sortColumnNames the names of the columns that used to sort data in each bucket. 桶内排序字段名
  */
 case class BucketSpec(
     numBuckets: Int,

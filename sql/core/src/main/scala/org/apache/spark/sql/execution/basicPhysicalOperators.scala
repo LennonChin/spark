@@ -327,6 +327,8 @@ case class SampleExec(
 
 /**
  * Physical plan for range (generating a range of 64 bit numbers).
+ *
+ * 利用SparkContext中的parallelize方法生成给定范围内的64位数据的RDD。
  */
 case class RangeExec(range: org.apache.spark.sql.catalyst.plans.logical.Range)
   extends LeafExecNode with CodegenSupport {

@@ -42,6 +42,7 @@ import org.apache.spark.util.Utils
 class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
 
   // TODO: Move the planner an optimizer into here from SessionState.
+  // SparkPlanner，LogicalPlan -> PhysicalPlan
   protected def planner = sparkSession.sessionState.planner
 
   def assertAnalyzed(): Unit = {
@@ -77,7 +78,9 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
     SparkSession.setActiveSession(sparkSession)
     // TODO: We use next(), i.e. take the first plan returned by the planner, here for now,
     //       but we will implement to choose the best plan.
-    planner.plan(ReturnAnswer(optimizedPlan)).next()
+    // SparkPlanner的plan方法返回值是Iterator[PhysicalPlan]，这里选取了第一个
+    planner.plan(ReturnAnswer(optimizedPlan)) // Optimized LogicalPlan -> Iterator[PhysicalPlan]
+      .next() // Iterator[PhysicalPlan] -> SparkPlan
   }
 
   // executedPlan should not be used to initialize any SparkPlan. It should be
@@ -90,19 +93,23 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
   /**
    * Prepares a planned [[SparkPlan]] for execution by inserting shuffle operations and internal
    * row format conversions as needed.
+   *
+   * 处理过程基于若干规则，主要包括对Python中UDF的提取、子查询的计划生成等。
+   * SparkPlan -> Prepared SparkPlan
    */
   protected def prepareForExecution(plan: SparkPlan): SparkPlan = {
+    // 执行前的准备，preparations返回类型是Seq[Rule[SparkPlan]]，也即是一个Rule集合
     preparations.foldLeft(plan) { case (sp, rule) => rule.apply(sp) }
   }
 
   /** A sequence of rules that will be applied in order to the physical plan before execution. */
   protected def preparations: Seq[Rule[SparkPlan]] = Seq(
-    python.ExtractPythonUDFs,
-    PlanSubqueries(sparkSession),
-    EnsureRequirements(sparkSession.sessionState.conf),
-    CollapseCodegenStages(sparkSession.sessionState.conf),
-    ReuseExchange(sparkSession.sessionState.conf),
-    ReuseSubquery(sparkSession.sessionState.conf))
+    python.ExtractPythonUDFs, // 提取Python中的UDF函数
+    PlanSubqueries(sparkSession), // 特殊子查询物理计划处理
+    EnsureRequirements(sparkSession.sessionState.conf), // 确保执行计划分区与排序正确性
+    CollapseCodegenStages(sparkSession.sessionState.conf), // 代码生成相关，根据SparkPlan的逻辑生成最终的Java执行代码。
+    ReuseExchange(sparkSession.sessionState.conf), // Exchange节点重用
+    ReuseSubquery(sparkSession.sessionState.conf)) // 子查询重用
 
   protected def stringOrError[A](f: => A): String =
     try f.toString catch { case e: AnalysisException => e.toString }

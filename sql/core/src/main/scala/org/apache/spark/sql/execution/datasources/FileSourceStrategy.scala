@@ -48,9 +48,14 @@ import org.apache.spark.sql.execution.SparkPlan
  *   - Assign the ordered files to buckets using the following algorithm.  If the current partition
  *     is under the threshold with the addition of the next file, add it.  If not, open a new bucket
  *     and add it.  Proceed to the next file.
+ *
+ * 文件数据源策略，面向的是来自文件的数据源。
+ * 根据数据文件信息构建FileSourceScanExec这样的物理执行计划，
+ * 并在此物理执行计划后添加过滤（FilterExec）与列剪裁（ProjectExec）物理计划。
  */
 object FileSourceStrategy extends Strategy with Logging {
   def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
+    // 匹配PhysicalOperation，解构出Project、Filter和LogicalRelation
     case PhysicalOperation(projects, filters,
       l @ LogicalRelation(fsRelation: HadoopFsRelation, _, table)) =>
       // Filters on this relation fall into four categories based on where we can use them to avoid
@@ -105,6 +110,7 @@ object FileSourceStrategy extends Strategy with Logging {
 
       val outputAttributes = readDataColumns ++ partitionColumns
 
+      // 构建最终的FileSourceScanExec
       val scan =
         new FileSourceScanExec(
           fsRelation,
@@ -114,14 +120,16 @@ object FileSourceStrategy extends Strategy with Logging {
           pushedDownFilters,
           table.map(_.identifier))
 
+      // 包装Filter
       val afterScanFilter = afterScanFilters.toSeq.reduceOption(expressions.And)
       val withFilter = afterScanFilter.map(execution.FilterExec(_, scan)).getOrElse(scan)
+      // 包装Project
       val withProjections = if (projects == withFilter.output) {
         withFilter
       } else {
         execution.ProjectExec(projects, withFilter)
       }
-
+      // 最终的结构：Seq[ProjectExec(FilterExec(FileSourceScanExec))]
       withProjections :: Nil
 
     case _ => Nil
