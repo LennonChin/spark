@@ -491,7 +491,12 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
 
     // Validate spark.executor.extraJavaOptions
-    // 检查spark.executor.extraJavaOptions
+    /**
+     * 检查spark.executor.extraJavaOptions，出现不符合规定的直接抛异常，有以下两种情况：
+     * 1. 不能在spark.executor.extraJavaOptions中以-Dspark.xxx.xxx的方式设置Spark的配置，
+     *    应该使用SparkConf直接设置或者在使用spark-submit时指定一个properties文件来设置。
+     * 2. 不能在spark.executor.extraJavaOptions中以-Xmx的方式设置最大内存，应该使用spark.executor.memory来设置。
+     */
     getOption(executorOptsKey).foreach { javaOpts =>
       if (javaOpts.contains("-Dspark")) {
         val msg = s"$executorOptsKey is not allowed to set Spark options (was '$javaOpts'). " +
@@ -506,7 +511,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
 
     // Validate memory fractions
-    // 检查内存相关的配置
+    // 检查内存相关的配置，这些配置的值必须在0 ~ 1之间，否则抛异常
     val deprecatedMemoryKeys = Seq(
       "spark.storage.memoryFraction",
       "spark.shuffle.memoryFraction",
@@ -525,7 +530,10 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
 
     // Warn against deprecated memory fractions (unless legacy memory management mode is enabled)
-    // 检查内存相关的配置
+    /**
+     * 检查内存相关的配置，如果spark.memory.useLegacyMode未开启，则默认是Unified内存管理，原始的静态内存管理方式被废弃
+     * 在这种情况下，如果设置了deprecatedMemoryKeys中的某些参数，就会打印异常。
+     */
     val legacyMemoryManagementKey = "spark.memory.useLegacyMode"
     val legacyMemoryManagement = getBoolean(legacyMemoryManagementKey, false)
     if (!legacyMemoryManagement) {
@@ -541,7 +549,13 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
 
     // Check for legacy configs
-    // 检查Spark运行时JVM参数
+    /**
+     * 检查Spark运行时JVM参数，SPARK_JAVA_OPTS在1.0+就被废弃了，请使用以下方式：
+     * - spark-submit提交时使用conf/spark-defaults.conf设置默认的配置。
+     * - spark-submit提交时使用--driver-java-options来设置Driver的-X的JVM配置。
+     * - spark.executor.extraJavaOptions来设置Executor的-X的JVM配置。
+     * - SPARK_DAEMON_JAVA_OPTS设置Standalone模式下Master或Driver的JVM配置。
+     */
     sys.env.get("SPARK_JAVA_OPTS").foreach { value =>
       val warning =
         s"""
@@ -556,6 +570,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
         """.stripMargin
       logWarning(warning)
 
+      // 检查spark.driver.extraJavaOptions和spark.executor.extraJavaOptions是否被重复设置。
       for (key <- Seq(executorOptsKey, driverOptsKey)) {
         if (getOption(key).isDefined) {
           throw new SparkException(s"Found both $key and SPARK_JAVA_OPTS. Use only the former.")
@@ -566,7 +581,11 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
       }
     }
 
-    // 检查Spark Classpath
+    /**
+     * 检查Spark Classpath。SPARK_CLASSPATH在1.0+就被废弃了，使用下面的方式：
+     * - spark-submit使用--driver-class-path设置Driver的Classpath。
+     * - spark.executor.extraClassPath设置Executor的Classpath。
+     */
     sys.env.get("SPARK_CLASSPATH").foreach { value =>
       val warning =
         s"""
@@ -579,6 +598,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
         """.stripMargin
       logWarning(warning)
 
+      // 检查spark.driver.extraClassPath和spark.executor.extraClassPath是否被重复设置
       for (key <- Seq(executorClasspathKey, driverClassPathKey)) {
         if (getOption(key).isDefined) {
           throw new SparkException(s"Found both $key and SPARK_CLASSPATH. Use only the former.")
@@ -590,7 +610,12 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
     }
 
     // 检查Executor相关参数
-    if (!contains(sparkExecutorInstances)) {
+    if (!contains(sparkExecutorInstances)) { // 未设置spark.executor.instances
+      /**
+       * SPARK_WORKER_INSTANCES在1.0+被废弃，使用下面两种方式：
+       * - spark-submit使用--num-executors指定Executor的数量。
+       * - spark.executor.instances设置Executor的数量。
+       */
       sys.env.get("SPARK_WORKER_INSTANCES").foreach { value =>
         val warning =
           s"""
@@ -608,11 +633,16 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
       }
     }
 
-    // 检查部署模式相关的参数
+    /**
+     * 检查部署模式相关的参数。
+     * spark.master设置为yarn-的方式在2.0倍废弃，现在改成spark.master指定yarn方式，
+     * 然后另外使用--deploy-mode指定部署模式，即--master yarn --deploy-mode cluster
+     */
     if (contains("spark.master") && get("spark.master").startsWith("yarn-")) {
       val warning = s"spark.master ${get("spark.master")} is deprecated in Spark 2.0+, please " +
         "instead use \"yarn\" with specified deploy mode."
 
+      // 遇到旧的模式，还是会进行解析yarn-client和yarn-cluster
       get("spark.master") match {
         case "yarn-cluster" =>
           logWarning(warning)
@@ -626,6 +656,7 @@ class SparkConf(loadDefaults: Boolean) extends Cloneable with Logging with Seria
       }
     }
 
+    // spark.submit.deployMode只能是client或cluster两种，否则抛异常
     if (contains("spark.submit.deployMode")) {
       get("spark.submit.deployMode") match {
         case "cluster" | "client" =>
