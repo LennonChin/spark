@@ -293,6 +293,8 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Users should not expect a specific directionality. If a specific directionality is needed,
    * transformDown or transformUp should be used.
    *
+   * 默认先序遍历
+   *
    * @param rule the function use to transform this nodes children
    */
   def transform(rule: PartialFunction[BaseType, BaseType]): BaseType = {
@@ -350,7 +352,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    *
    * @param rule the function used to transform this nodes children
    */
-  protected def transformChildren(
+   def transformChildren(
       rule: PartialFunction[BaseType, BaseType],
       nextOperation: (BaseType, PartialFunction[BaseType, BaseType]) => BaseType): BaseType = {
     if (children.nonEmpty) {

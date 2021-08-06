@@ -260,6 +260,7 @@ class Analyzer(
     }
   }
 
+  // 多维计算生成的逻辑算子树
   object ResolveGroupingAnalytics extends Rule[LogicalPlan] {
     /*
      *  GROUP BY a, b, c WITH ROLLUP
@@ -271,6 +272,13 @@ class Analyzer(
      *  represented as the bit masks.
      */
     def bitmasks(r: Rollup): Seq[Int] = {
+      /**
+       * c b a
+       * 0 0 0
+       *
+       * Rollup(groupByExprs: Seq[3]) => List(1, 2, 4, 8) => List(0, 1, 3, 7) => List(000, 001, 011, 111)
+       * => ( ( ), (a), (a, b), (a, b, c) )
+       */
       Seq.tabulate(r.groupByExprs.length + 1)(idx => (1 << idx) - 1)
     }
 
@@ -284,6 +292,13 @@ class Analyzer(
      *  represented as the bit masks.
      */
     def bitmasks(c: Cube): Seq[Int] = {
+      /**
+       * c b a
+       * 0 0 0
+       *
+       * Cube(groupByExprs: Seq[3]) => List(0, 1, 2, 3, 4, 5, 6, 7) => List(000, 001, 010, 011, 100, 101, 110, 111)
+       * => ((), (a), (b), (b, c), (c), (a, c), (a, b), (a, b, c))
+       */
       Seq.tabulate(1 << c.groupByExprs.length)(i => i)
     }
 
@@ -332,12 +347,14 @@ class Analyzer(
         failAnalysis(
           s"${VirtualColumn.hiveGroupingIdName} is deprecated; use grouping_id() instead")
 
+      // 对于Cube和Rollup类型的Aggregate算子节点，生成GroupingSets节点
       case Aggregate(Seq(c @ Cube(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(c), groupByExprs, child, aggregateExpressions)
       case Aggregate(Seq(r @ Rollup(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(r), groupByExprs, child, aggregateExpressions)
 
       // Ensure all the expressions have been resolved.
+      // 生成Expand逻辑算子节点加上Aggregate节点
       case x: GroupingSets if x.expressions.forall(_.resolved) =>
         val gid = AttributeReference(VirtualColumn.groupingIdName, IntegerType, false)()
 
@@ -361,6 +378,7 @@ class Analyzer(
           a.toAttribute.withNullability(((nullBitmask >> (attrLength - idx - 1)) & 1) == 1)
         }
 
+        // Expand节点
         val expand = Expand(x.bitmasks, groupByAliases, expandedAttributes, gid, x.child)
         val groupingAttrs = expand.output.drop(x.child.output.length)
 
@@ -390,6 +408,7 @@ class Analyzer(
           }.asInstanceOf[NamedExpression]
         }
 
+        // Aggregate节点
         Aggregate(groupingAttrs, aggregations, expand)
 
       case f @ Filter(cond, child) if hasGroupingFunction(cond) =>
@@ -1857,6 +1876,10 @@ class Analyzer(
 
       // Aggregate with Having clause. This rule works with an unresolved Aggregate because
       // a resolved Aggregate will not have Window Functions.
+      /**
+       * 带有Having子句的聚合。
+       * 这个Rule作用于Unresolved Aggregate，因为Resolved Aggregate不存在Window Function
+       */
       case f @ Filter(condition, a @ Aggregate(groupingExprs, aggregateExprs, child))
         if child.resolved &&
            hasWindowFunction(aggregateExprs) &&
@@ -1875,6 +1898,9 @@ class Analyzer(
       case p: LogicalPlan if !p.childrenResolved => p
 
       // Aggregate without Having clause.
+      /**
+       * 不带有Having子句的聚合。
+       */
       case a @ Aggregate(groupingExprs, aggregateExprs, child)
         if hasWindowFunction(aggregateExprs) &&
            a.expressions.forall(_.resolved) =>
@@ -1890,16 +1916,23 @@ class Analyzer(
 
       // We only extract Window Expressions after all expressions of the Project
       // have been resolved.
+      /**
+       * 只有在Project的所有Expression都被解析过后，才会提取Window Expression。
+       */
       case p @ Project(projectList, child)
         if hasWindowFunction(projectList) && !p.expressions.exists(!_.resolved) =>
+        // 表达式拆分
         val (windowExpressions, regularExpressions) = extract(projectList)
         // We add a project to get all needed expressions for window expressions from the child
         // of the original Project operator.
+        // 添加获取WindowExpression所有必须的表达式的Project
         val withProject = Project(regularExpressions, child)
         // Add Window operators.
+        // 添加Window算子
         val withWindow = addWindow(windowExpressions, withProject)
 
         // Finally, generate output columns according to the original projectList.
+        // 根据原始的Project的projectList生成输出列
         val finalProjectList = projectList.map(_.toAttribute)
         Project(finalProjectList, withWindow)
     }
@@ -1973,16 +2006,31 @@ class Analyzer(
   object ResolveWindowFrame extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan transform {
       case logical: LogicalPlan => logical transformExpressions {
+        /**
+         * 如果WindowSpecDefinition中指定了WindowFrame(对应包含SpecifiedWindowFrame表达式)，
+         * 而窗口函数中也设置了WindowFrame且与该WindowFrame不相同，则SQL语句抛出分析异常。
+         */
         case WindowExpression(wf: WindowFunction,
         WindowSpecDefinition(_, _, f: SpecifiedWindowFrame))
           if wf.frame != UnspecifiedFrame && wf.frame != f =>
-          failAnalysis(s"Window Frame $f must match the required frame ${wf.frame}")
+          failAnalysis(s"Window Frame $f must match the required frame ${wf.frame}") // throw AnalysisException
+        /**
+         * 如果查询中未指定WindowFrame，则将WindowExpression中的WindowFrame设置为窗口函数中的WindowFrame表达式。
+         */
         case WindowExpression(wf: WindowFunction,
         s @ WindowSpecDefinition(_, o, UnspecifiedFrame))
           if wf.frame != UnspecifiedFrame =>
           WindowExpression(wf, s.copy(frameSpecification = wf.frame))
+        /**
+         * 查询中未指定WindowFrame，而且函数不是WindowFunction类型，因此不包含WindowFrame信息，
+         * 此时会将WindowExpression设置为默认的WindowFrame表达式。
+          */
         case we @ WindowExpression(e, s @ WindowSpecDefinition(_, o, UnspecifiedFrame))
           if e.resolved =>
+          /**
+           * 如果排序，default frame is RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW.
+           * 如果不排序，default frame is ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING.
+           */
           val frame = SpecifiedWindowFrame.defaultWindowFrame(o.nonEmpty, acceptWindowFrame = true)
           we.copy(windowSpec = s.copy(frameSpecification = frame))
       }

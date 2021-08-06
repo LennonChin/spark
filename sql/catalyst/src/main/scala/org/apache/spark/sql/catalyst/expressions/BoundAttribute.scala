@@ -70,7 +70,7 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
       ev.copy(code = code)
     } else if (nullable) {
       ev.copy(code = s"""
-        boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
+        boolean ${ev.isNull} = ${ctx.INPUT_ROW}.iPsNullAt($ordinal);
         $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(dataType)} : ($value);""")
     } else {
       ev.copy(code = s"""$javaType ${ev.value} = $value;""", isNull = "false")
@@ -84,7 +84,7 @@ object BindReferences extends Logging {
       expression: A,
       input: AttributeSeq,
       allowFailures: Boolean = false): A = {
-    expression.transform { case a: AttributeReference =>
+    expression.transform { case a: AttributeReference => // 先序遍历
       attachTree(a, "Binding attribute") {
         val ordinal = input.indexOf(a.exprId)
         if (ordinal == -1) {
@@ -94,6 +94,7 @@ object BindReferences extends Logging {
             sys.error(s"Couldn't find $a in ${input.attrs.mkString("[", ",", "]")}")
           }
         } else {
+          // a的索引，a的数据类型，a是否可为空
           BoundReference(ordinal, a.dataType, input(ordinal).nullable)
         }
       }

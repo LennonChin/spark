@@ -501,10 +501,17 @@ case class Range(
   }
 }
 
+/**
+ * Aggregate逻辑算子树
+ *
+ * @param groupingExpressions
+ * @param aggregateExpressions
+ * @param child
+ */
 case class Aggregate(
-    groupingExpressions: Seq[Expression],
-    aggregateExpressions: Seq[NamedExpression],
-    child: LogicalPlan)
+    groupingExpressions: Seq[Expression], // 分组表达式列表。
+    aggregateExpressions: Seq[NamedExpression], // 聚合表达式列表，聚合表达式一般都需要设置名字。
+    child: LogicalPlan) // 子节点。
   extends UnaryNode {
 
   override lazy val resolved: Boolean = {
@@ -513,9 +520,15 @@ case class Aggregate(
       }.nonEmpty
     )
 
+    /**
+     * 1. 该算子中的所有表达式都已经被解析过了。
+     * 2. 其子节点已经被解析过了。
+     * 3. 该节点中不包含窗口（Window）函数表达式。
+     */
     !expressions.exists(!_.resolved) && childrenResolved && !hasWindowExpressions
   }
 
+  // 对应聚合表达式列表中的所有属性值。
   override def output: Seq[Attribute] = aggregateExpressions.map(_.toAttribute)
   override def maxRows: Option[Long] = child.maxRows
 
@@ -642,6 +655,10 @@ case class Expand(
  *
  * @param bitmasks     A list of bitmasks, each of the bitmask indicates the selected
  *                     GroupBy expressions
+ *                     列表中的每个数都用来定位groupByExprs列表中选中的表达式。
+ *                     假设bitmasks列表为(1，2)，二进制表示分别为(01，10)，而groupByExprs列表为(column_a，column_b)，
+ *                     那么bitmasks表示选中的group by列表分别为(column_a，null)和(null，column_b)，
+ *                     其中二进制0表示对应下标的列参与group by操作，二进制1表示对应下标的列不参与group by操作（这里表示为null）。
  * @param groupByExprs The Group By expressions candidates, take effective only if the
  *                     associated bit in the bitmask set to 1.
  * @param child        Child operator

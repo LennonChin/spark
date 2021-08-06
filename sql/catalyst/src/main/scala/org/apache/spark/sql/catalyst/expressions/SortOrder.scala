@@ -61,7 +61,7 @@ case class SortOrder(child: Expression, direction: SortDirection, nullOrdering: 
   override def foldable: Boolean = false
 
   override def checkInputDataTypes(): TypeCheckResult = {
-    if (RowOrdering.isOrderable(dataType)) {
+    if (RowOrdering.isOrderable(dataType)) { // 检查数据是否可排序
       TypeCheckResult.TypeCheckSuccess
     } else {
       TypeCheckResult.TypeCheckFailure(s"cannot sort data type ${dataType.simpleString}")

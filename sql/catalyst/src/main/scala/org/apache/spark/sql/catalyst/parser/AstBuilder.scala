@@ -363,6 +363,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
           case e: Expression => UnresolvedAlias(e)
         }
         val withProject = if (aggregation != null) {
+          // Aggregation聚合算子
           withAggregation(aggregation, namedExpressions, withFilter)
         } else if (namedExpressions.nonEmpty) {
           Project(namedExpressions, withFilter)
@@ -499,7 +500,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     import ctx._
     val groupByExpressions = expressionList(groupingExpressions)
 
-    if (GROUPING != null) {
+    if (GROUPING != null) { // 如果有GROUPING SETS
       // GROUP BY .... GROUPING SETS (...)
       val expressionMap = groupByExpressions.zipWithIndex.toMap
       val numExpressions = expressionMap.size
@@ -518,11 +519,11 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         }
       }
       GroupingSets(masks, groupByExpressions, query, selectExpressions)
-    } else {
+    } else { // 如果有CUBE或者ROLLUP
       // GROUP BY .... (WITH CUBE | WITH ROLLUP)?
-      val mappedGroupByExpressions = if (CUBE != null) {
+      val mappedGroupByExpressions = if (CUBE != null) {  // WITH CUBE
         Seq(Cube(groupByExpressions))
-      } else if (ROLLUP != null) {
+      } else if (ROLLUP != null) { // WITH ROLLUP
         Seq(Rollup(groupByExpressions))
       } else {
         groupByExpressions

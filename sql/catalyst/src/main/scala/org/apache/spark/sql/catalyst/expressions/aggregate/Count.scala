@@ -43,13 +43,13 @@ case class Count(children: Seq[Expression]) extends DeclarativeAggregate {
 
   private lazy val count = AttributeReference("count", LongType, nullable = false)()
 
-  override lazy val aggBufferAttributes = count :: Nil
+  override lazy val aggBufferAttributes: Seq[AttributeReference] = count :: Nil
 
   override lazy val initialValues = Seq(
-    /* count = */ Literal(0L)
+    /* count = */ Literal(0L) // 初始值为0
   )
 
-  override lazy val updateExpressions = {
+  override lazy val updateExpressions: Seq[Expression] = {
     val nullableChildren = children.filter(_.nullable)
     if (nullableChildren.isEmpty) {
       Seq(
@@ -62,11 +62,11 @@ case class Count(children: Seq[Expression]) extends DeclarativeAggregate {
     }
   }
 
-  override lazy val mergeExpressions = Seq(
+  override lazy val mergeExpressions: Seq[Expression] = Seq(
     /* count = */ count.left + count.right
   )
 
-  override lazy val evaluateExpression = count
+  override lazy val evaluateExpression: Expression = count
 
   override def defaultResult: Option[Literal] = Option(Literal(0L))
 }

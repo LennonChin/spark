@@ -278,6 +278,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
               sys.error("Distinct columns cannot exist in Aggregate operator containing " +
                 "aggregate functions which don't support partial aggregation.")
             } else {
+              // 不支持Partial聚合，无Distinct
               AggUtils.planAggregateWithoutPartial(
                 groupingExpressions,
                 aggregateExpressions,
@@ -285,12 +286,14 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
                 planLater(child))
             }
           } else if (functionsWithDistinct.isEmpty) {
+            // 支持Partial聚合，无Distinct
             AggUtils.planAggregateWithoutDistinct(
               groupingExpressions,
               aggregateExpressions,
               resultExpressions,
               planLater(child))
           } else {
+            // 支持Partial聚合，有Distance
             AggUtils.planAggregateWithOneDistinct(
               groupingExpressions,
               functionsWithDistinct,

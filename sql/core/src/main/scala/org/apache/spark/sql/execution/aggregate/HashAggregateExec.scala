@@ -70,6 +70,7 @@ case class HashAggregateExec(
     AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
     AttributeSet(aggregateBufferAttributes)
 
+  // 对输入数据的分布做了约束，如果存在分区表达式，那么数据分布必须是ClusteredDistribution类型。
   override def requiredChildDistribution: List[Distribution] = {
     requiredChildDistributionExpressions match {
       case Some(exprs) if exprs.isEmpty => AllTuples :: Nil

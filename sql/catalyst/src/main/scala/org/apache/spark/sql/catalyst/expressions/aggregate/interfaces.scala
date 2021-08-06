@@ -160,16 +160,23 @@ sealed abstract class AggregateFunction extends Expression with ImplicitCastInpu
   /** An aggregate function is not foldable. */
   final override def foldable: Boolean = false
 
-  /** The schema of the aggregation buffer. */
+  /** The schema of the aggregation buffer.
+   * 聚合缓冲区的Schema信息。
+   **/
   def aggBufferSchema: StructType
 
-  /** Attributes of fields in aggBufferSchema. */
+  /** Attributes of fields in aggBufferSchema.
+   * 聚合缓冲区的数据列信息，对应缓冲区数据列名。
+   **/
   def aggBufferAttributes: Seq[AttributeReference]
 
   /**
    * Attributes of fields in input aggregation buffers (immutable aggregation buffers that are
    * merged with mutable aggregation buffers in the merge() function or merge expressions).
    * These attributes are created automatically by cloning the [[aggBufferAttributes]].
+   *
+   *
+   * 获得输入数据的组成情况。
    */
   def inputAggBufferAttributes: Seq[AttributeReference]
 
@@ -235,6 +242,9 @@ sealed abstract class AggregateFunction extends Expression with ImplicitCastInpu
  * Correct ImperativeAggregate evaluation depends on the correctness of `mutableAggBufferOffset` and
  * `inputAggBufferOffset`, but not on the correctness of the attribute ids in `aggBufferAttributes`
  * and `inputAggBufferAttributes`.
+ *
+ * ImperativeAggregate聚合函数需要显式地实现initialize、update和merge方法来操作聚合缓冲区中的数据。
+ * ImperativeAggregate聚合函数所处理的聚合缓冲区本质上是基于行（InternalRow类型）的。
  */
 abstract class ImperativeAggregate extends AggregateFunction with CodegenFallback {
 
@@ -256,6 +266,8 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    *                                    |
    *                     avg(y) mutableAggBufferOffset = 2
    * }}}
+   *
+   * 该函数在底层共享的可变聚合缓冲区中第一个缓冲值的offset。
    */
   protected val mutableAggBufferOffset: Int
 
@@ -289,6 +301,12 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
    *                                     |
    *                       avg(y) inputAggBufferOffset = 3
    * }}}
+   *
+   * 该函数在底层共享的输入聚合缓冲区中第一个缓冲值的offset。
+   * 输入聚合缓冲区是不可变的，用于在update函数中合并两个聚合缓冲区，实现方式是将该缓冲区的值更新到可变聚合缓冲区中。
+   * 输入聚合缓冲区中可能还包含额外的属性，例如group by中的列。
+   *
+   * inputAggBufferOffset用来访问InputAggBuffer中对应的中间值。
    */
   protected val inputAggBufferOffset: Int
 
@@ -338,6 +356,8 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
  * we create this function in DataFrame API). So, if there is any fields in
  * the implemented class that need to access fields of its children, please make
  * those fields `lazy val`s.
+ *
+ * DeclarativeAggregate聚合函数是一类直接由Catalyst中的表达式（Expressions）构建的聚合函数。
  */
 abstract class DeclarativeAggregate
   extends AggregateFunction
@@ -346,11 +366,15 @@ abstract class DeclarativeAggregate
 
   /**
    * Expressions for initializing empty aggregation buffers.
+   *
+   * 聚合缓冲区初始化表达式
    */
   val initialValues: Seq[Expression]
 
   /**
    * Expressions for updating the mutable aggregation buffer based on an input row.
+   *
+   * 聚合缓冲区更新表达式
    */
   val updateExpressions: Seq[Expression]
 
@@ -359,12 +383,16 @@ abstract class DeclarativeAggregate
    * expressions, you can use the syntax `attributeName.left` and `attributeName.right` to refer
    * to the attributes corresponding to each of the buffers being merged (this magic is enabled
    * by the [[RichAttribute]] implicit class).
+   *
+   * 聚合缓冲区合并表达式
    */
   val mergeExpressions: Seq[Expression]
 
   /**
    * An expression which returns the final value for this aggregate function. Its data type should
    * match this expression's [[dataType]].
+   *
+   * 最终结果生成表达式
    */
   val evaluateExpression: Expression
 
@@ -459,6 +487,8 @@ abstract class DeclarativeAggregate
  * buffer's storage format, which is not supported by hash based aggregation. Hash based
  * aggregation only support aggregation buffer of mutable types (like LongType, IntType that have
  * fixed length and can be mutated in place in UnsafeRow)
+ *
+ * Typed ImperativeAggregate[T]聚合函数允许使用用户自定义的Java对象T作为内部的聚合缓冲区，因此这种类型的聚合函数是最灵活的。
  */
 abstract class TypedImperativeAggregate[T] extends ImperativeAggregate {
 

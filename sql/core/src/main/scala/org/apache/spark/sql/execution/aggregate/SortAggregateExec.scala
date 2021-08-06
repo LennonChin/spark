@@ -62,7 +62,9 @@ case class SortAggregateExec(
     }
   }
 
+  // 对输入数据的有序性做了约束
   override def requiredChildOrdering: Seq[Seq[SortOrder]] = {
+    // 其中的每个表达式都必须满足升序排列
     groupingExpressions.map(SortOrder(_, Ascending)) :: Nil
   }
 
@@ -83,6 +85,7 @@ case class SortAggregateExec(
         // so return an empty iterator.
         Iterator[UnsafeRow]()
       } else {
+        // 聚合迭代器
         val outputIter = new SortBasedAggregationIterator(
           groupingExpressions,
           child.output,

@@ -212,12 +212,14 @@ object PhysicalAggregation {
       // build a set of the distinct aggregate expressions and build a function which can
       // be used to re-write expressions so that they reference the single copy of the
       // aggregate function which actually gets computed.
+      // 对多次重复出现的聚合操作进行去重
       val aggregateExpressions = resultExpressions.flatMap { expr =>
         expr.collect {
           case agg: AggregateExpression => agg
         }
       }.distinct
 
+      // 对未命名的分组表达式（Grouping expressions）进行命名（套上一个Alias表达式），这样方便在后续聚合过程中进行引用。
       val namedGroupingExpressions = groupingExpressions.map {
         case ne: NamedExpression => ne -> ne
         // If the expression is not a NamedExpressions, we add an alias.
@@ -235,6 +237,8 @@ object PhysicalAggregation {
       // which takes the grouping columns and final aggregate result buffer as input.
       // Thus, we must re-write the result expressions so that their attributes match up with
       // the attributes of the final result projection's input row:
+      // 从最后结果中分离出聚合计算本身的值，
+      // 例如“count+1”会被拆分为count(AggregateExpression)和“count.resultAttribute+1”的最终计算。
       val rewrittenResultExpressions = resultExpressions.map { expr =>
         expr.transformDown {
           case ae: AggregateExpression =>

@@ -25,11 +25,13 @@ import org.apache.spark.sql.execution.metric.SQLMetric
 /**
  * An iterator used to evaluate [[AggregateFunction]]. It assumes the input rows have been
  * sorted by values of [[groupingExpressions]].
+ *
+ * 对应SortAggregateExec
  */
 class SortBasedAggregationIterator(
     groupingExpressions: Seq[NamedExpression],
     valueAttributes: Seq[Attribute],
-    inputIterator: Iterator[InternalRow],
+    inputIterator: Iterator[InternalRow], // 数据输入迭代器
     aggregateExpressions: Seq[AggregateExpression],
     aggregateAttributes: Seq[Attribute],
     initialInputBufferOffset: Int,
@@ -72,9 +74,11 @@ class SortBasedAggregationIterator(
   ///////////////////////////////////////////////////////////////////////////
 
   // The partition key of the current partition.
+  // 当前分组表达式
   private[this] var currentGroupingKey: UnsafeRow = _
 
   // The partition key of next partition.
+  // 下一个分组表达式
   private[this] var nextGroupingKey: UnsafeRow = _
 
   // The first row of next partition.
@@ -84,6 +88,7 @@ class SortBasedAggregationIterator(
   private[this] var sortedInputHasNewGroup: Boolean = false
 
   // The aggregation buffer used by the sort-based aggregation.
+  // 聚合缓冲区
   private[this] val sortBasedAggregationBuffer: InternalRow = newBuffer
 
   // This safe projection is used to turn the input row into safe row. This is necessary
@@ -97,6 +102,7 @@ class SortBasedAggregationIterator(
   // cache values from input row while updating the aggregation buffer.
   private[this] val safeProj: Projection = FromUnsafeProjection(valueAttributes.map(_.dataType))
 
+  // 初始化基本信息
   protected def initialize(): Unit = {
     if (inputIterator.hasNext) {
       initializeBuffer(sortBasedAggregationBuffer)
@@ -112,26 +118,37 @@ class SortBasedAggregationIterator(
 
   initialize()
 
-  /** Processes rows in the current group. It will stop when it find a new group. */
+  /** Processes rows in the current group. It will stop when it find a new group.
+   *
+   * 得到最终的聚合结果，依赖Aggregation Iterator的功能。
+   *
+   * 处理当前分组的数据。
+   **/
   protected def processCurrentSortedGroup(): Unit = {
+    // 开始遍历，将当前Grouping Key指向下一个Group Key
     currentGroupingKey = nextGroupingKey
     // Now, we will start to find all rows belonging to this group.
     // We create a variable to track if we see the next group.
+    // 标记是否找到下一个分区
     var findNextPartition = false
     // firstRowInNextGroup is the first row of this group. We first process it.
+    // 处理当前分组的第一行数据，数据处理之前首先通过safeProj将currentRow从Unsafe类型转换为Safe类型。
     processRow(sortBasedAggregationBuffer, safeProj(firstRowInNextGroup))
 
     // The search will stop when we see the next group or there is no
     // input row left in the iter.
+    // 还未迭代到下一个分区，且迭代器还有数据
     while (!findNextPartition && inputIterator.hasNext) {
       // Get the grouping key.
+      // 获取当前数据
       val currentRow = inputIterator.next()
+      // 获取Grouping key
       val groupingKey = groupingProjection(currentRow)
 
       // Check if the current row belongs the current input row.
-      if (currentGroupingKey == groupingKey) {
+      if (currentGroupingKey == groupingKey) { // Grouping key与当前Grouping key一直，处理数据
         processRow(sortBasedAggregationBuffer, safeProj(currentRow))
-      } else {
+      } else { // 否则可能是找到一个新组，对变量进行更新
         // We find a new group.
         findNextPartition = true
         nextGroupingKey = groupingKey.copy()

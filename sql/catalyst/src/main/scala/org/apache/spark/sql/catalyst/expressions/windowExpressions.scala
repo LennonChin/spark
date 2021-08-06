@@ -33,8 +33,11 @@ sealed trait WindowSpec
  * The specification for a window function.
  *
  * @param partitionSpec It defines the way that input rows are partitioned.
+ *                      分区信息
  * @param orderSpec It defines the ordering of rows in a partition.
+ *                  排序信息
  * @param frameSpecification It defines the window frame in a partition.
+ *                           Window Frame窗框信息，有UnspecifiedFrame和SpecifiedWindowFrame两种
  */
 case class WindowSpecDefinition(
     partitionSpec: Seq[Expression],
@@ -222,7 +225,13 @@ sealed trait WindowFrame
 /** Used as a place holder when a frame specification is not defined.  */
 case object UnspecifiedFrame extends WindowFrame
 
-/** A specified Window Frame. */
+/**
+ * A specified Window Frame.
+ *
+ * @param frameType 窗框类型
+ * @param frameStart 起始窗口边界
+ * @param frameEnd 终止窗口边界
+ */
 case class SpecifiedWindowFrame(
     frameType: FrameType,
     frameStart: FrameBoundary,
@@ -285,6 +294,11 @@ case class UnresolvedWindowExpression(
   override lazy val resolved = false
 }
 
+/**
+ * 窗口表达式
+ * @param windowFunction 窗口函数，如row_number()，rank()，dense_rank()等
+ * @param windowSpec 窗口定义，代表SQL语句中over关键字之后括号中的内容
+ */
 case class WindowExpression(
     windowFunction: Expression,
     windowSpec: WindowSpecDefinition) extends Expression with Unevaluable {

@@ -373,8 +373,9 @@ fromClause
     : FROM relation (',' relation)* lateralView*
     ;
 
+// group by / cube / grouping sets / rollup
 aggregation
-    : GROUP BY groupingExpressions+=expression (',' groupingExpressions+=expression)* (
+    : GROUP BY groupingExpressions+=expression (',' groupingExpressions+=expression)* ( // groupingExpressions是分组表达式，可以有多个
       WITH kind=ROLLUP
     | WITH kind=CUBE
     | kind=GROUPING SETS '(' groupingSet (',' groupingSet)* ')')?

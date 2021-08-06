@@ -239,6 +239,10 @@ public final class UnsafeFixedWidthAggregationMap {
    *
    * Note that the map will be reset for inserting new records, and the returned sorter can NOT be
    * used to insert records.
+   *
+   * 对Map内的数据进行排序，然后溢写到磁盘，返回一个UnsafeKVExternalSorter
+   *
+   * Map会重被重置并用于插入新的数据，返回的排序器不能插入数据。
    */
   public UnsafeKVExternalSorter destructAndCreateExternalSorter() throws IOException {
     return new UnsafeKVExternalSorter(

@@ -89,6 +89,7 @@ case class WindowExec(
   override def output: Seq[Attribute] =
     child.output ++ windowExpression.map(_.toAttribute)
 
+  // 规定了输入数据分布情况
   override def requiredChildDistribution: Seq[Distribution] = {
     if (partitionSpec.isEmpty) {
       // Only show warning when the number of bytes is larger than 100 MB?
@@ -98,6 +99,7 @@ case class WindowExec(
     } else ClusteredDistribution(partitionSpec) :: Nil
   }
 
+  // 规定了输入数据有序性
   override def requiredChildOrdering: Seq[Seq[SortOrder]] =
     Seq(partitionSpec.map(SortOrder(_, Ascending)) ++ orderSpec)
 
@@ -310,6 +312,7 @@ case class WindowExec(
         fetchNextRow()
 
         // Manage the current partition.
+        // 构造ArrayBuffer
         val rows = ArrayBuffer.empty[UnsafeRow]
         val inputFields = child.output.length
         var sorter: UnsafeExternalSorter = null
@@ -336,6 +339,8 @@ case class WindowExec(
               rows += nextRow.copy()
 
               if (rows.length >= 4096) {
+                // 如果ArrayBuffer数据量大于4096，则切换成UnsafeExternalSorter
+                // 并将ArrayBuffer中已存在的数据拷贝到该UnsafeExternalSorter中
                 // We will not sort the rows, so prefixComparator and recordComparator are null.
                 sorter = UnsafeExternalSorter.create(
                   TaskContext.get().taskMemoryManager(),
@@ -352,6 +357,7 @@ case class WindowExec(
                 rows.foreach { r =>
                   sorter.insertRecord(r.getBaseObject, r.getBaseOffset, r.getSizeInBytes, 0, false)
                 }
+                // 清理ArrayBuffer
                 rows.clear()
               }
             } else {
