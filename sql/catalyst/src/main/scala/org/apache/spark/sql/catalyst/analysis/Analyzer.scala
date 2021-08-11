@@ -561,8 +561,12 @@ class Analyzer(
     /**
      * Generate a new logical plan for the right child with different expression IDs
      * for all conflicting attributes.
+     *
+     * 将右子节点对应的Expression用一个新的Expression ID表示，
+     * 这样即使出现同名，经过处理之后Expression ID也不相同，因此可以区分Join操作中不同的数据表。
      */
     private def dedupRight (left: LogicalPlan, right: LogicalPlan): LogicalPlan = {
+      // 获取冲突的列
       val conflictingAttributes = left.outputSet.intersect(right.outputSet)
       logDebug(s"Conflicting attributes ${conflictingAttributes.mkString(",")} " +
         s"between $left and $right")
@@ -2057,6 +2061,9 @@ class Analyzer(
   /**
    * Removes natural or using joins by calculating output columns based on output from two sides,
    * Then apply a Project on a normal Join to eliminate natural or using join.
+   *
+   * 该规则将NATUAL或USING类型的Join转换为普通的Join。
+   * 根据Join两边的输出列信息计算得到总的输出列信息，然后将Project算子添加到常规的Join算子上。
    */
   object ResolveNaturalAndUsingJoin extends Rule[LogicalPlan] {
     override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {

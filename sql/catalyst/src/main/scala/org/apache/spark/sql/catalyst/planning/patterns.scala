@@ -99,6 +99,9 @@ object PhysicalOperation extends PredicateHelper {
  *
  * Null-safe equality will be transformed into equality as joining key (replace null with default
  * value).
+ *
+ * 提取出Join算子中的连接条件。
+ * Null-safe等值连接会将转换为等值连接（将null替换成默认值）。
  */
 object ExtractEquiJoinKeys extends Logging with PredicateHelper {
   /** (joinType, leftKeys, rightKeys, condition, leftChild, rightChild) */

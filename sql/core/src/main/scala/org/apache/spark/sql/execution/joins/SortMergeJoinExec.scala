@@ -590,11 +590,11 @@ private[joins] class SortMergeJoinScanner(
     keyOrdering: Ordering[InternalRow],
     streamedIter: RowIterator,
     bufferedIter: RowIterator) {
-  private[this] var streamedRow: InternalRow = _
-  private[this] var streamedRowKey: InternalRow = _
-  private[this] var bufferedRow: InternalRow = _
+  private[this] var streamedRow: InternalRow = _ // Stream表迭代器所指向的数据行
+  private[this] var streamedRowKey: InternalRow = _ // Stream表当前指向的数据行的Join Key
+  private[this] var bufferedRow: InternalRow = _ // Build表迭代器所指向的数据行
   // Note: this is guaranteed to never have any null columns:
-  private[this] var bufferedRowKey: InternalRow = _
+  private[this] var bufferedRowKey: InternalRow = _ // Build表当前指向的数据行的Join Key，需要保证不会有null列
   /**
    * The join key for the rows buffered in `bufferedMatches`, or null if `bufferedMatches` is empty
    */
@@ -607,12 +607,17 @@ private[joins] class SortMergeJoinScanner(
 
   // --- Public methods ---------------------------------------------------------------------------
 
+  // 提供给外界调用的获取当前满足Join条件的单个streamedRow的方法
   def getStreamedRow: InternalRow = streamedRow
 
+  // 提供给外界调用的获取当前满足Join条件的多个bufferedRow的方法
   def getBufferedMatches: ArrayBuffer[InternalRow] = bufferedMatches
 
   /**
    * Advances both input iterators, stopping when we have found rows with matching join keys.
+   *
+   * 得到满足Inner Join条件的数据。
+   *
    * @return true if matching rows have been found and false otherwise. If this returns true, then
    *         [[getStreamedRow]] and [[getBufferedMatches]] can be called to construct the join
    *         results.
@@ -667,6 +672,9 @@ private[joins] class SortMergeJoinScanner(
   /**
    * Advances the streamed input iterator and buffers all rows from the buffered input that
    * have matching keys.
+   *
+   * 得到满足Outer Join条件的数据。
+   *
    * @return true if the streamed iterator returned a row, false otherwise. If this returns true,
    *         then [[getStreamedRow]] and [[getBufferedMatches]] can be called to produce the outer
    *         join results.
@@ -708,10 +716,14 @@ private[joins] class SortMergeJoinScanner(
 
   /**
    * Advance the streamed iterator and compute the new row's join key.
+   *
+   * Stream表迭代器移动得到新的streamedRow。
+   *
    * @return true if the streamed iterator returned a row and false otherwise.
+   *         表示Stream表是否还有数据。
    */
   private def advancedStreamed(): Boolean = {
-    if (streamedIter.advanceNext()) {
+    if (streamedIter.advanceNext()) { // 推进StreamIter，更新Stream表的Row和Join Key
       streamedRow = streamedIter.getRow
       streamedRowKey = streamedKeyGenerator(streamedRow)
       true
@@ -724,6 +736,9 @@ private[joins] class SortMergeJoinScanner(
 
   /**
    * Advance the buffered iterator until we find a row with join key that does not contain nulls.
+   *
+   * Build表迭代器移动得到新的bufferedRow。
+   *
    * @return true if the buffered iterator returned a row and false otherwise.
    */
   private def advancedBufferedToRowWithNullFreeJoinKey(): Boolean = {
@@ -731,7 +746,7 @@ private[joins] class SortMergeJoinScanner(
     while (!foundRow && bufferedIter.advanceNext()) {
       bufferedRow = bufferedIter.getRow
       bufferedRowKey = bufferedKeyGenerator(bufferedRow)
-      foundRow = !bufferedRowKey.anyNull
+      foundRow = !bufferedRowKey.anyNull // 跳过有任意Join列的值为null的行
     }
     if (!foundRow) {
       bufferedRow = null
@@ -744,6 +759,10 @@ private[joins] class SortMergeJoinScanner(
 
   /**
    * Called when the streamed and buffered join keys match in order to buffer the matching rows.
+   *
+   * 在streamedTable与bufferedTable两个数据表进行迭代时，如果当前streamedRow和bufferedRow能够满足Join条件，
+   * 那么将继续移动bufferedIter，将bufferedTable中满足条件的所有数据行一次性找出，存储到bufferedMatches中，
+   * bufferMatchingRows方法实现了该逻辑。
    */
   private def bufferMatchingRows(): Unit = {
     assert(streamedRowKey != null)

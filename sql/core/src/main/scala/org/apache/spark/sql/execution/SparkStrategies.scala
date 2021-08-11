@@ -123,11 +123,12 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
     /**
      * Matches a plan whose output should be small enough to be used in broadcast join.
+     * 判断某个表对应的逻辑计划能否广播。
      */
     private def canBroadcast(plan: LogicalPlan): Boolean = {
       plan.statistics.isBroadcastable ||
         (plan.statistics.sizeInBytes >= 0 &&
-          plan.statistics.sizeInBytes <= conf.autoBroadcastJoinThreshold)
+          plan.statistics.sizeInBytes <= conf.autoBroadcastJoinThreshold) // 表的大小在 0 ~ spark.sql.autoBroadcastJoinThreshold之间
     }
 
     /**
@@ -137,6 +138,8 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
      * dynamic.
      */
     private def canBuildLocalHashMap(plan: LogicalPlan): Boolean = {
+      // 逻辑计划的数据量 < 广播阈值 * Shuffle分区数
+      // Shuffle分区数由spark.sql.shuffle.partitions配置，默认200
       plan.statistics.sizeInBytes < conf.autoBroadcastJoinThreshold * conf.numShufflePartitions
     }
 

@@ -412,11 +412,16 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * separated) relations here, these get converted into a single plan by condition-less inner join.
    */
   override def visitFromClause(ctx: FromClauseContext): LogicalPlan = withOrigin(ctx) {
-    val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left, relation) =>
+    /**
+     * 对ctx.relation（类型为List<RelationContext>）进行左折叠操作，
+     * 将已经生成的逻辑计划与新的RelationContext中的主要数据表（relationPrimary）结合
+     * 得到Join算子（optionalMap方法），然后将生成的Join算子加入新的逻辑计划中。
+     */
+    val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left: LogicalPlan, relation: RelationContext) =>
       // 生成主表的逻辑计划
-      val right = plan(relation.relationPrimary)
+      val right: LogicalPlan = plan(relation.relationPrimary)
       // 可能有Join操作的表
-      val join = right.optionalMap(left)(Join(_, _, Inner, None))
+      val join: LogicalPlan = right.optionalMap(left)(Join(_, _, Inner, None))
       withJoinRelations(join, relation)
     }
     ctx.lateralView.asScala.foldLeft(from)(withGenerate)
@@ -565,6 +570,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   private def withJoinRelations(base: LogicalPlan, ctx: RelationContext): LogicalPlan = {
     ctx.joinRelation.asScala.foldLeft(base) { (left, join) =>
       withOrigin(join) {
+        // 根据SQL语句中的Join类型构造基础的JoinType对象
         val baseJoinType = join.joinType match {
           case null => Inner
           case jt if jt.CROSS != null => Cross
@@ -577,12 +583,14 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         }
 
         // Resolve the join type and join condition
+        // 解析Join类型即Join条件
         val (joinType, condition) = Option(join.joinCriteria) match {
-          case Some(c) if c.USING != null =>
+          case Some(c) if c.USING != null => // 是否包含USING关键字
             (UsingJoin(baseJoinType, c.identifier.asScala.map(_.getText)), None)
-          case Some(c) if c.booleanExpression != null =>
+          case Some(c) if c.booleanExpression != null => // 常规boolean表达式
             (baseJoinType, Option(expression(c.booleanExpression)))
-          case None if join.NATURAL != null =>
+          // 自动对两个表按照同名的列进行内连接语法如下，使用自然连接要注意，两个表同名的列不能超过1个。
+          case None if join.NATURAL != null => // NATURAL关键字
             if (baseJoinType == Cross) {
               throw new ParseException("NATURAL CROSS JOIN is not supported", ctx)
             }
