@@ -106,7 +106,7 @@ public class TransportClientFactory implements Closeable {
 
   // 客户端Channel被创建时使用的类
   private final Class<? extends Channel> socketChannelClass;
-  // 根据Netty的规范，客户端只有worker组，所以此处创建worker-Group。
+  // 根据Netty的规范，客户端只有worker组，所以此处创建workerGroup。
   private EventLoopGroup workerGroup;
   // 汇集ByteBuf但对本地线程缓存禁用的分配器。
   private PooledByteBufAllocator pooledAllocator;
@@ -151,6 +151,13 @@ public class TransportClientFactory implements Closeable {
    * This blocks until a connection is successfully established and fully bootstrapped.
    *
    * Concurrency: This method is safe to call from multiple threads.
+   *
+   * 创建连接远程Server的客户端
+   *
+   * @param remoteHost 远程Server主机名
+   * @param remotePort 远程Server端口
+   * @return
+   * @throws IOException
    */
   public TransportClient createClient(String remoteHost, int remotePort) throws IOException {
     // Get connection from the connection pool first.
@@ -202,6 +209,7 @@ public class TransportClientFactory implements Closeable {
     // If we reach here, we don't have an existing connection open. Let's create a new one.
     // Multiple threads might race here to create new connections. Keep only one of them active.
     // 走到这里，说明ClientPool中没有缓存的TransportClient
+    // 构造远程连接地址的InetSocketAddress，同时侦测DNS解析时间
     final long preResolveHost = System.nanoTime();
     final InetSocketAddress resolvedAddress = new InetSocketAddress(remoteHost, remotePort);
     final long hostResolveTimeMs = (System.nanoTime() - preResolveHost) / 1000000;

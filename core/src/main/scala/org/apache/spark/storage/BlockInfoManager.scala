@@ -42,10 +42,11 @@ import org.apache.spark.internal.Logging
  *              does not imply that the block is actually resident in memory).
   *              BlockInfo所描述的Block的存储级别，即StorageLevel。
  * @param classTag the block's [[ClassTag]], used to select the serializer
-  *                 BlockInfo所描述的Block的类型。
+  *                 BlockInfo所描述的Block的类型。用于选择序列化器。
  * @param tellMaster whether state changes for this block should be reported to the master. This
  *                   is true for most blocks, but is false for broadcast blocks.
-  *                   BlockInfo所描述的Block是否需要告知Master。
+ *                   BlockInfo所描述的Block在状态发生变化时是否需要告知Master。
+ *                   大多数Block的该参数值为true，Broadcast类型的Block该值为false。
  */
 private[storage] class BlockInfo(
     val level: StorageLevel,
@@ -172,7 +173,7 @@ private[storage] class BlockInfoManager extends Logging {
   /**
    * Tracks the set of blocks that each task has locked for writing.
     *
-    * 每次TaskAttempt的标识TaskAttemptId与执行获取的Block的写锁之间的映射关系。
+    * 每次TaskAttempt的标识TaskAttemptId与获取的Block的写锁之间的映射关系。
     * TaskAttemptId与写锁之间是一对多的关系，即一次TaskAttempt执行会获取零到多个Block的写锁。
    */
   @GuardedBy("this")
@@ -184,7 +185,7 @@ private[storage] class BlockInfoManager extends Logging {
    * Tracks the set of blocks that each task has locked for reading, along with the number of times
    * that a block has been locked (since our read locks are re-entrant).
     *
-    * 每次TaskAttempt执行的标识TaskAttemptId与获取的Block的读锁之间的映射关系。
+    * 每次TaskAttempt的标识TaskAttemptId与获取的Block的读锁之间的映射关系。
     * TaskAttemptId与读锁之间是一对多的关系，即一次TaskAttempt执行会获取零到多个Block的读锁，
     * 并且会记录对于同一个Block的读锁的占用次数。
    */
@@ -269,7 +270,7 @@ private[storage] class BlockInfoManager extends Logging {
       }
       // 走到这里说明无法获取读锁，有其他TaskAttempt线程正在写
       if (blocking) {
-        // 如果设置了阻塞，则等待，阻塞在BlockManager对象上
+        // 如果设置了阻塞，则等待，阻塞在BlockInfoManager对象上
         wait()
       }
     } while (blocking) // 如果设置了阻塞，则一直循环获取直到获取到
@@ -394,7 +395,10 @@ private[storage] class BlockInfoManager extends Logging {
       info.readerCount -= 1
       // 获取对应的BlockId集合
       val countsForTask = readLocksByTask(currentTaskAttemptId)
-      // 对TaskAttempt在readLocksByTask集合中对应的BlockId的出现次数减1，返回的次数是BlockId之前的出现次数
+      /**
+       * 对TaskAttempt在readLocksByTask集合中对应的BlockId的出现次数减1，
+       * 返回的次数是移除操作之前对blockId对应的块正在进行读操作的TaskAttempt数量
+       */
       val newPinCountForTask: Int = countsForTask.remove(blockId, 1) - 1
       /**
         * newPinCountForTask表示当前TaskAttempt持有BlockId对应的Block的读锁次数与1的差值

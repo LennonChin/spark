@@ -42,7 +42,13 @@ public class NettyUtils {
     return new DefaultThreadFactory(threadPoolPrefix, true);
   }
 
-  /** Creates a Netty EventLoopGroup based on the IOMode. */
+  /** Creates a Netty EventLoopGroup based on the IOMode.
+   *
+   * @param mode 默认NIO
+   * @param numThreads 默认最大为8
+   * @param threadPrefix 默认“shuffle-server”
+   * @return
+   */
   public static EventLoopGroup createEventLoop(IOMode mode, int numThreads, String threadPrefix) {
     ThreadFactory threadFactory = createThreadFactory(threadPrefix);
 

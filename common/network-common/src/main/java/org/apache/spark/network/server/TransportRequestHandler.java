@@ -198,7 +198,7 @@ public class TransportRequestHandler extends MessageHandler<RequestMessage> {
   // 处理无需回复的RPC请求
   private void processOneWayMessage(OneWayMessage req) {
     try {
-      // 使用RpcHandler具体实现类的receive()方法处理，没有传入回调参数，即默认回调为ONE_WAY_CALLBACK
+      // 使用RpcHandler具体实现类的receive()方法处理，没有传入回调参数，即默认回调为ONE_WAY_CALLBACK，该回调仅打印日志
       rpcHandler.receive(reverseClient, req.body().nioByteBuffer());
     } catch (Exception e) {
       logger.error("Error while invoking RpcHandler#receive() for one-way message.", e);

@@ -84,7 +84,7 @@ public class TransportFrameDecoder extends ChannelInboundHandlerAdapter {
         ByteBuf first = buffers.getFirst();
         // 计算可读字节数
         int available = first.readableBytes();
-        // 先使用intercepter处理数据
+        // 先使用interceptor处理数据
         if (feedInterceptor(first)) {
           assert !first.isReadable() : "Interceptor still active but buffer has data.";
         }

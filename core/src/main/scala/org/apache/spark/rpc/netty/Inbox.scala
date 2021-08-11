@@ -134,6 +134,7 @@ private[netty] class Inbox(
 
     // 走到这里说明取到消息了
     while (true) {
+      // 第二个参数action是传名参数
       safelyCall(endpoint) { // 对下面操作中出现非致命的异常，都会传递给endpoint的onError()方法
         // 根据消息类型进行匹配，分别处理
         message match {

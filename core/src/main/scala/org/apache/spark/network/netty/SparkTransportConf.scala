@@ -55,7 +55,7 @@ object SparkTransportConf {
     // Specify thread configuration based on our JVM's allocation of cores (rather than necessarily
     // assuming we have all the machine's cores).
     // NB: Only set if serverThreads/clientThreads not already set.
-    val numThreads = defaultNumThreads(numUsableCores)
+    val numThreads = defaultNumThreads(numUsableCores) // <= 8
     // 服务端传输线程数
     conf.setIfMissing(s"spark.$module.io.serverThreads", numThreads.toString)
     // 设置客户端传输线程数

@@ -52,19 +52,19 @@ public class TransportConf {
   public TransportConf(String module, ConfigProvider conf) {
     this.module = module;
     this.conf = conf;
-    SPARK_NETWORK_IO_MODE_KEY = getConfKey("io.mode");
-    SPARK_NETWORK_IO_PREFERDIRECTBUFS_KEY = getConfKey("io.preferDirectBufs");
-    SPARK_NETWORK_IO_CONNECTIONTIMEOUT_KEY = getConfKey("io.connectionTimeout");
-    SPARK_NETWORK_IO_BACKLOG_KEY = getConfKey("io.backLog");
-    SPARK_NETWORK_IO_NUMCONNECTIONSPERPEER_KEY =  getConfKey("io.numConnectionsPerPeer");
-    SPARK_NETWORK_IO_SERVERTHREADS_KEY = getConfKey("io.serverThreads");
-    SPARK_NETWORK_IO_CLIENTTHREADS_KEY = getConfKey("io.clientThreads");
-    SPARK_NETWORK_IO_RECEIVEBUFFER_KEY = getConfKey("io.receiveBuffer");
-    SPARK_NETWORK_IO_SENDBUFFER_KEY = getConfKey("io.sendBuffer");
-    SPARK_NETWORK_SASL_TIMEOUT_KEY = getConfKey("sasl.timeout");
-    SPARK_NETWORK_IO_MAXRETRIES_KEY = getConfKey("io.maxRetries");
-    SPARK_NETWORK_IO_RETRYWAIT_KEY = getConfKey("io.retryWait");
-    SPARK_NETWORK_IO_LAZYFD_KEY = getConfKey("io.lazyFD");
+    SPARK_NETWORK_IO_MODE_KEY = getConfKey("io.mode"); // spark.[module].io.mode
+    SPARK_NETWORK_IO_PREFERDIRECTBUFS_KEY = getConfKey("io.preferDirectBufs"); // spark.[module].io.preferDirectBufs
+    SPARK_NETWORK_IO_CONNECTIONTIMEOUT_KEY = getConfKey("io.connectionTimeout"); // spark.[module].io.connectionTimeout
+    SPARK_NETWORK_IO_BACKLOG_KEY = getConfKey("io.backLog"); // spark.[module].io.backLog
+    SPARK_NETWORK_IO_NUMCONNECTIONSPERPEER_KEY =  getConfKey("io.numConnectionsPerPeer"); // spark.[module].io.numConnectionsPerPeer
+    SPARK_NETWORK_IO_SERVERTHREADS_KEY = getConfKey("io.serverThreads"); // spark.[module].io.serverThreads
+    SPARK_NETWORK_IO_CLIENTTHREADS_KEY = getConfKey("io.clientThreads"); // spark.[module].io.clientThreads
+    SPARK_NETWORK_IO_RECEIVEBUFFER_KEY = getConfKey("io.receiveBuffer"); // spark.[module].io.receiveBuffer
+    SPARK_NETWORK_IO_SENDBUFFER_KEY = getConfKey("io.sendBuffer"); // spark.[module].io.sendBuffer
+    SPARK_NETWORK_SASL_TIMEOUT_KEY = getConfKey("sasl.timeout"); // spark.[module].sasl.timeout
+    SPARK_NETWORK_IO_MAXRETRIES_KEY = getConfKey("io.maxRetries"); // spark.[module].io.maxRetries
+    SPARK_NETWORK_IO_RETRYWAIT_KEY = getConfKey("io.retryWait"); // spark.[module].io.retryWait
+    SPARK_NETWORK_IO_LAZYFD_KEY = getConfKey("io.lazyFD"); // spark.[module].io.lazyFD
   }
 
   public int getInt(String name, int defaultValue) {

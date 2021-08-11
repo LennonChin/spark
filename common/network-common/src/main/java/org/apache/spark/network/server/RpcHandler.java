@@ -32,6 +32,7 @@ import org.apache.spark.network.client.TransportClient;
  */
 public abstract class RpcHandler {
 
+  // 适用于OneWayRpcRequest，即无需响应的请求，该回调仅用于打印日志。
   private static final RpcResponseCallback ONE_WAY_CALLBACK = new OneWayRpcCallback();
 
   /**
@@ -64,6 +65,8 @@ public abstract class RpcHandler {
    * Receives an RPC message that does not expect a reply. The default implementation will
    * call "{@link #receive(TransportClient, ByteBuffer, RpcResponseCallback)}" and log a warning if
    * any of the callback methods are called.
+   *
+   * 处理无需响应的RPC请求。
    *
    * @param client A channel client which enables the handler to make requests back to the sender
    *               of this RPC. This will always be the exact same object for a particular channel.

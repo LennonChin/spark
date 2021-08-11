@@ -76,7 +76,7 @@ private[netty] class Dispatcher(nettyEnv: NettyRpcEnv) extends Logging {
       }
       /**
         * 将RpcEndpoint、NettyRpcEndpointRef包装为EndpointData对象，
-        * 并放入endpoints字典中，如果返回值不为null说明已经存在了同名的
+        * 并放入endpoints字典中（不存在才放入），如果返回值不为null说明已经存在了同名的
         */
       if (endpoints.putIfAbsent(name, new EndpointData(name, endpoint, endpointRef)) != null) {
         throw new IllegalArgumentException(s"There is already an RpcEndpoint called $name")

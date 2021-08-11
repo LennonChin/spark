@@ -169,5 +169,9 @@ private[spark] trait RpcEndpoint {
  *
  * However, there is no guarantee that the same thread will be executing the same
  * [[ThreadSafeRpcEndpoint]] for different messages.
+ *
+ * 标记接口，用于标记该Endpoint是要求线程安全的
+ * 在 [[org.apache.spark.rpc.netty.Inbox#process]] 方法处理OnStart消息时，
+ * 如果Endpoint不是ThreadSafeRpcEndpoint类型的，则会使用多线程的方式进行处理，以提高消息吞吐量。
  */
 private[spark] trait ThreadSafeRpcEndpoint extends RpcEndpoint

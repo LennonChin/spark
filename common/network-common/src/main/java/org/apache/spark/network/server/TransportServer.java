@@ -106,7 +106,7 @@ public class TransportServer implements Closeable {
   // 初始化TransportServer，其内部会初始化ServerBootstrap
   private void init(String hostToBind, int portToBind) {
     // IO模式，默认为NIO，即spark.模块.io.mode
-    IOMode ioMode = IOMode.valueOf(conf.ioMode());
+    IOMode ioMode = IOMode.valueOf(conf.ioMode()); // NIO or EPOLL, default is NIO
     // Netty服务端需同时创建bossGroup和workerGroup
     EventLoopGroup bossGroup =
       NettyUtils.createEventLoop(ioMode, conf.serverThreads(), "shuffle-server");
@@ -141,6 +141,8 @@ public class TransportServer implements Closeable {
        * 当服务端的Channel初始化时该方法会被调用。
        * 一旦有客户端的连接被接收，该方法就会被调用，
        * 其中ch即是与客户端进行通信的SocketChannel。
+       * 在调用完成后，该Initializer会从pipeline中移除。
+       * 也就是说，该Initializer就是用于在接受新连接时做一定的初始化工作。
        */
       @Override
       protected void initChannel(SocketChannel ch) throws Exception {
