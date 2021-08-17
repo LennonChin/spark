@@ -63,9 +63,26 @@ private[spark] class DiskBlockManager(conf: SparkConf, deleteFilesOnStop: Boolea
   // of subDirs(i) is protected by the lock of subDirs(i)
   /**
     * DiskStore的本地子目录的二维数组：
-    * - 一维大小为spark.local.dir属性或者系统属性java.io.tmpdir指定的目录的个数。
+    * - 一维大小为配置项定的目录的个数，配置项可以是LOCAL_DIRS、SPARK_EXECUTOR_DIRS、SPARK_LOCAL_DIRS、MESOS_DIRECTORY、spark.local.dir或java.io.tmpdir等等。
     * - 二维大小为subDirsPerLocalDir，即spark.diskStore.subDirectories指定的大小，默认为64。
     * - 元素为File对象。
+    *
+    * 目录结构如下：
+    * └─ 配置指定的目录，可以是LOCAL_DIRS、SPARK_EXECUTOR_DIRS、SPARK_LOCAL_DIRS、MESOS_DIRECTORY、spark.local.dir或java.io.tmpdir指定
+    *     └─ blockmgr-f4cf9ae6-9213-4178-98a7-11b4a1fe12c7
+    *         ├─ 00
+    *         ├─ 01
+    *         ├─ ...
+    *         ├─ 3e
+    *         │   ├─ fileA
+    *         │   ├─ fileB
+    *         │   ├─ ...
+    *         │   └─ fileC
+    *         └─ 3f
+    *             ├─ fileX
+    *             ├─ ...
+    *             ├─ fileY
+    *             └─ fileZ
     */
   private val subDirs = Array.fill(localDirs.length)(new Array[File](subDirsPerLocalDir))
 

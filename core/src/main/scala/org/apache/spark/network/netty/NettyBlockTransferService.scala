@@ -89,7 +89,7 @@ private[spark] class NettyBlockTransferService(
       clientBootstrap = Some(new SaslClientBootstrap(transportConf, conf.getAppId, securityManager,
         securityManager.isSaslEncryptionEnabled()))
     }
-    // 创建TransportContext
+    // 创建TransportContext，使用NettyBlockRpcServer作为RpcHandler。
     transportContext = new TransportContext(transportConf, rpcHandler)
     // 创建TransportClientFactory
     clientFactory = transportContext.createClientFactory(clientBootstrap.toSeq.asJava)
@@ -143,7 +143,10 @@ private[spark] class NettyBlockTransferService(
         // 创建RetryingBlockFetcher并调用start方法，传入了上面创建的RetryingBlockFetcher.BlockFetchStarter对象
         new RetryingBlockFetcher(transportConf, blockFetchStarter, blockIds, listener).start()
       } else {
-        // 调用blockFetchStarter（即RetryingBlockFetcher.BlockFetchStarter对象）的createAndStart()方法
+        /**
+         * 调用blockFetchStarter（即RetryingBlockFetcher.BlockFetchStarter对象）的createAndStart()方法，
+         * 本质是使用OneForOneBlockFetcher拉取一次，就算失败也不重试。
+         */
         blockFetchStarter.createAndStart(blockIds, listener)
       }
     } catch {

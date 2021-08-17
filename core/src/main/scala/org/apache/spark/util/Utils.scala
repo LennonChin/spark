@@ -777,7 +777,7 @@ private[spark] object Utils extends Logging {
       // to what Yarn on this system said was available. Note this assumes that Yarn has
       // created the directories already, and that they are secured so that only the
       // user has access to them.
-      getYarnLocalDirs(conf).split(",")
+      getYarnLocalDirs(conf).split(",") // 根据LOCAL_DIRS获取
     } else if (conf.getenv("SPARK_EXECUTOR_DIRS") != null) { // 非YARN容器中运行，且配置了SPARK_EXECUTOR_DIRS
       // 通过SPARK_EXECUTOR_DIRS配置来获取
       conf.getenv("SPARK_EXECUTOR_DIRS").split(File.pathSeparator)

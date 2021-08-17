@@ -682,7 +682,7 @@ private[spark] class BlockManager(
     require(blockId != null, "BlockId is null")
     var runningFailureCount = 0
     var totalFailureCount = 0
-    // 根据blockId获取远程位置集合
+    // 根据blockId获取远程位置集合，即BlockManagerId集合
     val locations = getLocations(blockId)
     // 最大可重试次数
     val maxFetchFailures = locations.size
@@ -1472,11 +1472,16 @@ private[spark] class BlockManager(
    *
    * The caller of this method must hold a write lock on the block before calling this method.
    * This method does not release the write lock.
-    *
-    * 从内存中删除Block，当Block的存储级别允许写入磁盘，Block将被写入磁盘。
-    * 此方法主要在内存不足，需要从内存腾出空闲空间时使用。
-    *
+   *
+   * 从内存中删除Block，当Block的存储级别允许写入磁盘，Block将被写入磁盘。
+   * 此方法主要在内存不足，需要从内存腾出空闲空间时使用。
+   *
+   * @param blockId 被驱逐的数据块的BlockId
+   * @param data 被驱逐的数据块的数据
+   * @tparam T 被驱逐数据块的数据类型，从前面写入数据的流程可知，
+   *           写入的数据可能是ChunkedByteBuffer缓冲区，也有可能是数组类型的集合
    * @return the block's new effective StorageLevel.
+   *         数据块被驱逐之后新的持久化级别
    */
   private[storage] override def dropFromMemory[T: ClassTag](
       blockId: BlockId,

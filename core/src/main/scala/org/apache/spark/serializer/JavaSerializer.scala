@@ -52,7 +52,7 @@ private[spark] class JavaSerializationStream(
     }
     // 没写一个计数器自增1
     counter += 1
-    // 当计数器值大于counterReset时，说明需要重置ObjectOutputStream流
+    // 当计数器值大于counterReset时，说明需要重置ObjectOutputStream流，防止内存泄漏
     if (counterReset > 0 && counter >= counterReset) {
       // 进行重置
       objOut.reset()

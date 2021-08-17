@@ -40,6 +40,7 @@ private[spark] class DiskStore(conf: SparkConf, diskManager: DiskBlockManager) e
 
   /**
     * 读取磁盘中的Block时，是直接读取还是使用FileChannel的内存镜像映射方法读取的阈值。
+    * 当文件大小小于该阈值，就直接读取，否则使用FileChannel的方式读取。
     * 由spark.storage.memoryMapThreshold配置，默认为2M
     */
   private val minMemoryMapBytes = conf.getSizeAsBytes("spark.storage.memoryMapThreshold", "2m")

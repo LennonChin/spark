@@ -101,7 +101,7 @@ private[spark] class SerializerManager(
 
   // 判断对于指定的类型标记ct，是否能使用kryoSerializer进行序列化。
   def canUseKryo(ct: ClassTag[_]): Boolean = {
-    // 当类型标记ct属于primitiveAndPrimitiveArrayClassTags或者stringClassTag时，canUseKryo方法才返回真。
+    // 当类型标记ct属于基本类型、基本类型数组或者字符串类型时，canUseKryo方法才返回真。
     primitiveAndPrimitiveArrayClassTags.contains(ct) || ct == stringClassTag
   }
 
@@ -140,11 +140,11 @@ private[spark] class SerializerManager(
   // 不同类型的数据块是否能够被压缩
   private def shouldCompress(blockId: BlockId): Boolean = {
     blockId match {
-      case _: ShuffleBlockId => compressShuffle
-      case _: BroadcastBlockId => compressBroadcast
-      case _: RDDBlockId => compressRdds
-      case _: TempLocalBlockId => compressShuffleSpill
-      case _: TempShuffleBlockId => compressShuffle
+      case _: ShuffleBlockId => compressShuffle // spark.shuffle.compress，默认true
+      case _: BroadcastBlockId => compressBroadcast // spark.broadcast.compress，默认true
+      case _: RDDBlockId => compressRdds // spark.rdd.compress，默认false
+      case _: TempLocalBlockId => compressShuffleSpill // spark.shuffle.spill.compress，默认true
+      case _: TempShuffleBlockId => compressShuffle // spark.rdd.compress，默认true
       case _ => false
     }
   }

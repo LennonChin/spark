@@ -29,6 +29,10 @@ private[spark] object RpcUtils {
     val driverHost: String = conf.get("spark.driver.host", "localhost")
     val driverPort: Int = conf.getInt("spark.driver.port", 7077)
     Utils.checkHost(driverHost, "Expected hostname")
+    /**
+     * 使用Executor的NettyRpcEnv，通过URI和名称（即“BlockManagerMaster”）来询问Driver，
+     * 检查BlockManagerMaster的端点在Driver是否存在
+     */
     rpcEnv.setupEndpointRef(RpcAddress(driverHost, driverPort), name)
   }
 

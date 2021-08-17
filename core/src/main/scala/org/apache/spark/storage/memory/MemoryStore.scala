@@ -207,8 +207,14 @@ private[spark] class MemoryStore(
    * whether there is enough free memory. If the block is successfully materialized, then the
    * temporary unroll memory used during the materialization is "transferred" to storage memory,
    * so we won't acquire more memory than is actually needed to store the block.
-    *
-    * 将BlockId对应的Block（已经转换为Iterator）写入内存。
+   *
+   * 尝试将给定的Block写入内存，Block是迭代器类型的，里面包含多个对象。
+   *
+   * 在某些情况下，给定的Block迭代器可能因为包含的对象太大，难以物化存储到内存中。
+   * 为了避免OOM异常，这个方法会优雅地展开迭代器，并且周期性地检查是否有足够的内存用于存储。
+   * 如果整个迭代器中的Block都可以成功物化，在物化过程中临时使用的o展开内存会转换为存储内存，
+   * 这种方式可以避免申请超过实际用于存储Block的额外内存。
+   *
    *
    * @return in case of success, the estimated size of the stored data. In case of failure, return
    *         an iterator containing the values of the block. The returned iterator will be backed
@@ -254,7 +260,7 @@ private[spark] class MemoryStore(
     var vector = new SizeTrackingVector[T]()(classTag)
 
     // Request enough memory to begin unrolling
-    // 请求足够的内存开始展开操作，默认为unrollMemoryThreshold，即1M
+    // 请求足够的内存开始展开操作，默认为unrollMemoryThreshold，即1M；默认On-heap内存
     keepUnrolling =
       reserveUnrollMemoryForThisTask(blockId, initialMemoryThreshold, MemoryMode.ON_HEAP)
 
@@ -319,7 +325,7 @@ private[spark] class MemoryStore(
       // Acquire storage memory if necessary to store this block in memory.
       val enoughStorageMemory = {
         // 可能需要申请额外的内存
-        if (unrollMemoryUsedByThisBlock <= size) { // 如果计算的展开使用内存小于等于实际使用内存
+        if (unrollMemoryUsedByThisBlock <= size) { // 如果计算的展开使用内存小于等于实际使用内存，即使用SizeEstimator评估时没有评估到位，还缺一部分内存
           // 需要申请额外的内存
           val acquiredExtra =
             memoryManager.acquireStorageMemory(
@@ -329,7 +335,7 @@ private[spark] class MemoryStore(
             transferUnrollToStorage(unrollMemoryUsedByThisBlock)
           }
           acquiredExtra
-        } else { // unrollMemoryUsedByThisBlock > size
+        } else { // unrollMemoryUsedByThisBlock > size，评估申请的内存大于最终评估的大小，需要把多评估的内存释放
           // If this task attempt already owns more unroll memory than is necessary to store the
           // block, then release the extra memory that will not be used.
           // 如果计算的展开使用内存大于实际使用内存大小，则将过剩的内存释放掉
@@ -617,12 +623,16 @@ private[spark] class MemoryStore(
       // 已经选择的用于驱逐的Block的BlockId的数组。
       val selectedBlocks = new ArrayBuffer[BlockId]
 
-      // 判断BlockId指定的Block是否可以驱逐
+      /**
+       * 判断BlockId指定的Block是否可以驱逐，需要满足两个条件：
+       * 1. 该Block使用的内存模式与申请的相同，即On-heap内存只可被驱逐返还给On-heap内存池，Off-heap内存只可驱逐返还给Off-heap内存池。
+       * 2. BlockId对应的Block不是RDD，或者存入的BlockId与驱逐blockId指向的不是同一个RDD。
+       *
+       * @param blockId 判断的BlockId
+       * @param entry BlockId对应的MemoryEntry
+       * @return BlockId指向的Block是否可被驱逐
+       */
       def blockIsEvictable(blockId: BlockId, entry: MemoryEntry[_]): Boolean = {
-        /** 需要满足两个条件：
-          * 1. 该Block使用的内存模式与申请的相同。
-          * 2. BlockId对应的Block不是RDD，或者BlockId与blockId不是同一个RDD。
-          */
         entry.memoryMode == memoryMode && (rddToAdd.isEmpty || rddToAdd != getRddId(blockId))
       }
 

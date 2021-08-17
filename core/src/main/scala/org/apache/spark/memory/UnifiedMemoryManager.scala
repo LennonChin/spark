@@ -202,7 +202,8 @@ private[spark] class UnifiedMemoryManager private[memory] (
       case MemoryMode.ON_HEAP => ( // 堆内存
         onHeapExecutionMemoryPool,
         onHeapStorageMemoryPool,
-        maxOnHeapStorageMemory)
+        maxOnHeapStorageMemory) // 注意，此处最大可用内存刨去了执行内存，
+                                // 也即是说，在处理存储内存申请时，直接先将执行内存的部分排除在外
       case MemoryMode.OFF_HEAP => ( // 堆外内存
         offHeapExecutionMemoryPool,
         offHeapStorageMemoryPool,
@@ -266,11 +267,15 @@ object UnifiedMemoryManager {
     * 获取统一内存管理器可用的最大内存
    */
   private def getMaxMemory(conf: SparkConf): Long = {
-    // 系统可用的最大内存，通过spark.testing.memory配置，未配置的话则取运行时环境的最大内存
+    /**
+     * 系统可用的最大内存，通过spark.testing.memory配置，未配置的话则取运行时环境的最大内存（即Executor内存），
+     * spark.testing.memory是测试环境参数，生产环境会忽略该参数，因此会取spark.executor.memory参数指定的Executor内存。
+     */
     val systemMemory = conf.getLong("spark.testing.memory", Runtime.getRuntime.maxMemory)
     /**
       * 获取系统保留内存大小，通过spark.testing.reservedMemory配置获取，
-      * 如果没有指定，判断是否配置了spark.testing，如果配置了则为0，否则默认为300 * 1024 * 1024，即300MB
+      * 如果没有指定，判断是否配置了spark.testing，如果配置了则为0，否则默认为300 * 1024 * 1024，即300MB；
+      * spark.testing.reservedMemory和spark.testing都是测试环境参数，生产环境会忽略该参数，因此会取默认的300MB。
       */
     val reservedMemory = conf.getLong("spark.testing.reservedMemory",
       if (conf.contains("spark.testing")) 0 else RESERVED_SYSTEM_MEMORY_BYTES)

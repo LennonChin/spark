@@ -43,6 +43,7 @@ import org.apache.spark.internal.Logging
   * 由于Task数量是动态的，因此会跟踪所有激活的Task的数量以便重新计算 1 / 2N 和 1 / N 的值。
  *
  * @param lock a [[MemoryManager]] instance to synchronize on
+ *             MemoryManager对象，一把锁，用于对内存操作进行并发同步
  * @param memoryMode the type of memory tracked by this pool (on- or off-heap)
   *                   内存模式。用于执行的内存池包括堆内存和堆外内存两种。
  */

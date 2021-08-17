@@ -24,6 +24,8 @@ import java.util.LinkedList;
 import java.util.Map;
 
 import org.apache.spark.unsafe.Platform;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * A simple {@link MemoryAllocator} that can allocate up to 16GB using a JVM long primitive array.
@@ -31,6 +33,8 @@ import org.apache.spark.unsafe.Platform;
  * Tungsten在堆内存模式下使用的内存分配器，与onHeapExecutionMemoryPool配合使用。
  */
 public class HeapMemoryAllocator implements MemoryAllocator {
+
+  private static final Logger logger = LoggerFactory.getLogger(HeapMemoryAllocator.class);
 
   // 关于MemoryBlock的弱引用的缓冲池，用于Page页（即MemoryBlock）的分配。
   @GuardedBy("this")
@@ -56,6 +60,9 @@ public class HeapMemoryAllocator implements MemoryAllocator {
   // 用于分配指定大小（size）的MemoryBlock
   @Override
   public MemoryBlock allocate(long size) throws OutOfMemoryError {
+
+    logger.debug("Tungsten allocate heap memory, size (bytes): " + size);
+
     if (shouldPool(size)) { // 指定大小（size）的MemoryBlock需要采用池化机制
       synchronized (this) {
         // 从bufferPoolsBySize的弱引用中获取指定大小的MemoryBlock链表
@@ -74,7 +81,7 @@ public class HeapMemoryAllocator implements MemoryAllocator {
               return memory;
             }
           }
-          // 没有指定大小的MemoryBlock，移除指定大小的MemoryBlock缓存
+          // 池链内没有指定大小的MemoryBlock，移除指定大小的MemoryBlock缓存
           bufferPoolsBySize.remove(size);
         }
       }
@@ -97,8 +104,8 @@ public class HeapMemoryAllocator implements MemoryAllocator {
     // 创建MemoryBlock并返回
     MemoryBlock memory = new MemoryBlock(array, Platform.LONG_ARRAY_OFFSET, size);
     // Debug相关
-    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) {
-      memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_CLEAN_VALUE);
+    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) { // spark.memory.debugFill
+      memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_CLEAN_VALUE); // 0xa5, jemalloc's debug fill values.
     }
     // 返回创建的MemoryBlock
     return memory;
@@ -107,10 +114,13 @@ public class HeapMemoryAllocator implements MemoryAllocator {
   // 用于释放MemoryBlock
   @Override
   public void free(MemoryBlock memory) {
+
+    logger.debug("Tungsten free heap memory, size (bytes): " + memory.size());
+
     // 获取待释放MemoryBlock的大小
     final long size = memory.size();
-    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) {
-      memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_FREED_VALUE);
+    if (MemoryAllocator.MEMORY_DEBUG_FILL_ENABLED) { // spark.memory.debugFill
+      memory.fill(MemoryAllocator.MEMORY_DEBUG_FILL_FREED_VALUE); // 0x5a, jemalloc's debug fill values.
     }
     if (shouldPool(size)) { // MemoryBlock的大小需要采用池化机制
       // 将MemoryBlock的弱引用放入bufferPoolsBySize中
