@@ -58,12 +58,13 @@ private[hive] class HiveSessionState(sparkSession: SparkSession)
    */
   override lazy val analyzer: Analyzer = {
     new Analyzer(catalog, conf) {
+      // 加入Hive自身的扩展Rule
       override val extendedResolutionRules =
-        catalog.ParquetConversions ::
-        catalog.OrcConversions ::
-        AnalyzeCreateTable(sparkSession) ::
-        PreprocessTableInsertion(conf) ::
-        DataSourceAnalysis(conf) ::
+        catalog.ParquetConversions :: // Parquet格式文件转换
+        catalog.OrcConversions :: // ORC格式文件转换
+        AnalyzeCreateTable(sparkSession) :: // Create表
+        PreprocessTableInsertion(conf) :: // Insert表
+        DataSourceAnalysis(conf) :: // 数据源分析
         (if (conf.runSQLonFile) new ResolveDataSource(sparkSession) :: Nil else Nil)
 
       override val extendedCheckRules = Seq(PreWriteCheck(conf, catalog))
@@ -78,6 +79,7 @@ private[hive] class HiveSessionState(sparkSession: SparkSession)
       with HiveStrategies {
       override val sparkSession: SparkSession = self.sparkSession
 
+      // 添加Hive相关的策略
       override def strategies: Seq[Strategy] = {
         experimentalMethods.extraStrategies ++ Seq(
           FileSourceStrategy,
@@ -85,9 +87,9 @@ private[hive] class HiveSessionState(sparkSession: SparkSession)
           DDLStrategy,
           SpecialLimits,
           InMemoryScans,
-          HiveTableScans,
-          DataSinks,
-          Scripts,
+          HiveTableScans, // 负责从Hive表中读取数据
+          DataSinks, // 用于向Hive表中写入数据
+          Scripts, // 应用于SQL脚本的场景
           Aggregation,
           JoinSelection,
           BasicOperators

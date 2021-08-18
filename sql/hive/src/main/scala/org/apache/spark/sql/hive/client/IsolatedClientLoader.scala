@@ -141,12 +141,21 @@ private[hive] object IsolatedClientLoader extends Logging {
  *    this is a unique instance, it is not visible externally other than as a generic
  *    [[HiveClient]], unless `isolationOn` is set to `false`.
  *
+ * 一般情况下，Spark SQL只会通过HiveClient访问Hive中的类，为了更好地隔离，IsolatedClientLoader将不同的类分成3种，不同种类的加载和访问规则各不相同。
+ *  - 共享类（Shared classes）：包括基本的Java、Scala、Logging和Spark中的类，这些类通过当前上下文的ClassLoader加载，
+ *                            调用HiveClient返回的结果对于外部来说是可见的。
+ *  - Hive类（Hive classes）：通过加载Hive的相关Jar包得到的类。默认情况下，加载这些类的ClassLoader和加载共享类的ClassLoader并不相同，
+ *                          因此，无法在外部访问这些类。
+ *  - 桥梁类（Barrier classes）：一般包括HiveClientImpl与Shim类，在共享类与Hive类之间起到了桥梁的作用，Spark SQL能够通过这个类访问Hive中的类。
+ *                             每个新的HiveClientImpl实例都对应一个特定的Hive版本。
+ *
  * @param version The version of hive on the classpath.  used to pick specific function signatures
  *                that are not compatible across versions.
  * @param execJars A collection of jar files that must include hive and hadoop.
  * @param config   A set of options that will be added to the HiveConf of the constructed client.
  * @param isolationOn When true, custom versions of barrier classes will be constructed.  Must be
  *                    true unless loading the version of hive that is on Sparks classloader.
+ *                    控制是否单独创建ClassLoader来加载Barrier类，默认为true。
  * @param sharesHadoopClasses When true, we will share Hadoop classes between Spark and
  * @param rootClassLoader The system root classloader. Must not know about Hive classes.
  * @param baseClassLoader The spark classloader that is used to load shared classes.
@@ -203,7 +212,7 @@ private[hive] class IsolatedClientLoader(
    */
   private[hive] val classLoader: MutableURLClassLoader = {
     val isolatedClassLoader =
-      if (isolationOn) {
+      if (isolationOn) { // 以隔离模式创建MutableURLClassLoader
         new URLClassLoader(allJars, rootClassLoader) {
           override def loadClass(name: String, resolve: Boolean): Class[_] = {
             val loaded = findLoadedClass(name)
@@ -211,15 +220,15 @@ private[hive] class IsolatedClientLoader(
           }
           def doLoadClass(name: String, resolve: Boolean): Class[_] = {
             val classFileName = name.replaceAll("\\.", "/") + ".class"
-            if (isBarrierClass(name)) {
+            if (isBarrierClass(name)) { // 是桥梁类，自己加载
               // For barrier classes, we construct a new copy of the class.
               val bytes = IOUtils.toByteArray(baseClassLoader.getResourceAsStream(classFileName))
               logDebug(s"custom defining: $name - ${util.Arrays.hashCode(bytes)}")
               defineClass(name, bytes, 0, bytes.length)
-            } else if (!isSharedClass(name)) {
+            } else if (!isSharedClass(name)) { // 不是共享类，代理给父类
               logDebug(s"hive class: $name - ${getResource(classToPath(name))}")
               super.loadClass(name, resolve)
-            } else {
+            } else { // 是共享类，交给baseClassLoader加载
               // For shared classes, we delegate to baseClassLoader, but fall back in case the
               // class is not found.
               logDebug(s"shared class: $name")
@@ -249,15 +258,16 @@ private[hive] class IsolatedClientLoader(
 
   /** The isolated client interface to Hive. */
   private[hive] def createClient(): HiveClient = {
-    if (!isolationOn) {
+    if (!isolationOn) { // 非隔离模式，直接创建HiveClientImpl桥梁类
       return new HiveClientImpl(version, sparkConf, hadoopConf, config, baseClassLoader, this)
     }
     // Pre-reflective instantiation setup.
     logDebug("Initializing the logger to avoid disaster...")
-    val origLoader = Thread.currentThread().getContextClassLoader
-    Thread.currentThread.setContextClassLoader(classLoader)
+    val origLoader = Thread.currentThread().getContextClassLoader // 保存旧的ClassLoader
+    Thread.currentThread.setContextClassLoader(classLoader) // 设置新的ClassLoader，classLoader为MutableURLClassLoader
 
     try {
+      // 尝试使用MutableURLClassLoader加载HiveClientImpl类，并创建对象。
       classLoader
         .loadClass(classOf[HiveClientImpl].getName)
         .getConstructors.head
@@ -275,6 +285,7 @@ private[hive] class IsolatedClientLoader(
           throw e
         }
     } finally {
+      // 将ClassLoader重置回原始的ClassLoader
       Thread.currentThread.setContextClassLoader(origLoader)
     }
   }

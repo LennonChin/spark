@@ -41,6 +41,11 @@ private[thriftserver] class SparkSQLOperationManager()
   val sessionToActivePool = new ConcurrentHashMap[SessionHandle, String]()
   val sessionToContexts = new ConcurrentHashMap[SessionHandle, SQLContext]()
 
+  /**
+   * 重载OperationManager中的版本。
+   * OperationManager创建的是ExecuteStatementOperation，查询由Hive执行，
+   * 而SparkOperationManager创建的是SparkExecuteStatementOperation，查询发送给Spark SQL完成。
+   */
   override def newExecuteStatementOperation(
       parentSession: HiveSession,
       statement: String,
@@ -51,6 +56,7 @@ private[thriftserver] class SparkSQLOperationManager()
       s" initialized or had already closed.")
     val sessionState = sqlContext.sessionState.asInstanceOf[HiveSessionState]
     val runInBackground = async && sessionState.hiveThriftServerAsync
+    // Spark SQL执行SQL语句的最终实现
     val operation = new SparkExecuteStatementOperation(parentSession, statement, confOverlay,
       runInBackground)(sqlContext, sessionToActivePool)
     handleToOperation.put(operation.getHandle, operation)

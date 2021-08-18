@@ -66,22 +66,31 @@ private[hive] class SparkSQLSessionManager(hiveServer: HiveServer2, sqlContext: 
       sessionConf: java.util.Map[String, String],
       withImpersonation: Boolean,
       delegationToken: String): SessionHandle = {
+    // 使用父类SessionManager创建Session
     val sessionHandle =
       super.openSession(protocol, username, passwd, ipAddress, sessionConf, withImpersonation,
           delegationToken)
     val session = super.getSession(sessionHandle)
+
+    // 通知监听器Session被创建
     HiveThriftServer2.listener.onSessionCreated(
       session.getIpAddress, sessionHandle.getSessionId.toString, session.getUsername)
+
+    // 从SQLContext中获取HiveSessionState
     val sessionState = sqlContext.sessionState.asInstanceOf[HiveSessionState]
-    val ctx = if (sessionState.hiveThriftServerSingleSession) {
+    // 得到SQLContext
+    val ctx = if (sessionState.hiveThriftServerSingleSession) { // spark.sql.hive.thriftServer.singleSession，默认false
       sqlContext
     } else {
       sqlContext.newSession()
     }
+    // 设置版本
     ctx.setConf("spark.sql.hive.version", HiveUtils.hiveExecutionVersion)
+    // 切换默认数据库
     if (sessionConf != null && sessionConf.containsKey("use:database")) {
       ctx.sql(s"use ${sessionConf.get("use:database")}")
     }
+    // 记录SessionHandle到sessionToContexts中
     sparkSqlOperationManager.sessionToContexts.put(sessionHandle, ctx)
     sessionHandle
   }

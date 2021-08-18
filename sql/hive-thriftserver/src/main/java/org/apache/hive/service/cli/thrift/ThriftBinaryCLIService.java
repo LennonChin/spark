@@ -55,6 +55,8 @@ public class ThriftBinaryCLIService extends ThriftCLIService {
 
       // Thrift configs
       hiveAuthFactory = new HiveAuthFactory(hiveConf);
+
+      // 从HiveAuthFactory中获取
       TTransportFactory transportFactory = hiveAuthFactory.getAuthTransFactory();
       TProcessorFactory processorFactory = hiveAuthFactory.getAuthProcFactory(this);
       TServerSocket serverSocket = null;

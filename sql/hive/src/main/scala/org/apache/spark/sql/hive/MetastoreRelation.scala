@@ -70,6 +70,7 @@ private[hive] case class MetastoreRelation(
   }
 
   // TODO: merge this with HiveClientImpl#toHiveTable
+  // HiveTable类型，用来获取Hive数据表信息的重要渠道，包括统计信息、分区信息和元数据信息等。
   @transient val hiveQlTable: HiveTable = {
     // We start by constructing an API table as Hive performs several important transformations
     // internally when converting an API table to a QL table.
@@ -208,6 +209,7 @@ private[hive] case class MetastoreRelation(
     }
   }
 
+  // 当Spark SQL系统中需要知道Hive数据表存储格式和序列化/反序列化方式时，TableDesc类型的属性必不可少。
   val tableDesc = new TableDesc(
     hiveQlTable.getInputFormatClass,
     // The class of table should be org.apache.hadoop.hive.ql.metadata.Table because
@@ -236,6 +238,7 @@ private[hive] case class MetastoreRelation(
     .filter { c => !catalogTable.partitionColumnNames.contains(c.name) }
     .map(_.toAttribute)
 
+  // 由数据行属性字段（attributes）和分区字段（partitionKeys）组合而成
   val output = attributes ++ partitionKeys
 
   /** An attribute map that can be used to lookup original attributes based on expression id. */

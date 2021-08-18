@@ -46,10 +46,12 @@ import org.apache.log4j.Logger;
 /**
  * OperationManager.
  *
+ * 各种Operation的管理统一由OperationManager来完成。
  */
 public class OperationManager extends AbstractService {
   private final Log LOG = LogFactory.getLog(OperationManager.class.getName());
 
+  // 从OperationHandle映射到Operation的HashMap
   private final Map<OperationHandle, Operation> handleToOperation =
       new HashMap<OperationHandle, Operation>();
 
@@ -59,9 +61,10 @@ public class OperationManager extends AbstractService {
 
   @Override
   public synchronized void init(HiveConf hiveConf) {
-    if (hiveConf.getBoolVar(HiveConf.ConfVars.HIVE_SERVER2_LOGGING_OPERATION_ENABLED)) {
+    if (hiveConf.getBoolVar(HiveConf.ConfVars.HIVE_SERVER2_LOGGING_OPERATION_ENABLED)) { // hive.server2.logging.operation.enabled
+      // 注册日志系统
       initOperationLogCapture(hiveConf.getVar(
-        HiveConf.ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL));
+        HiveConf.ConfVars.HIVE_SERVER2_LOGGING_OPERATION_LEVEL)); // hive.server2.logging.operation.level
     } else {
       LOG.debug("Operation level logging is turned off");
     }
@@ -82,6 +85,7 @@ public class OperationManager extends AbstractService {
 
   private void initOperationLogCapture(String loggingMode) {
     // Register another Appender (with the same layout) that talks to us.
+    // 将LogDriverAppender注册到日志系统中
     Appender ap = new LogDivertAppender(this, OperationLog.getLoggingLevel(loggingMode));
     Logger.getRootLogger().addAppender(ap);
   }
@@ -157,6 +161,7 @@ public class OperationManager extends AbstractService {
     return handleToOperation.get(operationHandle);
   }
 
+  // 移除超时的Operation
   private synchronized Operation removeTimedOutOperation(OperationHandle operationHandle) {
     Operation operation = handleToOperation.get(operationHandle);
     if (operation != null && operation.isTimedOut(System.currentTimeMillis())) {
@@ -166,10 +171,12 @@ public class OperationManager extends AbstractService {
     return null;
   }
 
+  // 添加Operation和OperationHandle的映射
   private synchronized void addOperation(Operation operation) {
     handleToOperation.put(operation.getHandle(), operation);
   }
 
+  // 移除Operation和OperationHandle的映射
   private synchronized Operation removeOperation(OperationHandle opHandle) {
     return handleToOperation.remove(opHandle);
   }

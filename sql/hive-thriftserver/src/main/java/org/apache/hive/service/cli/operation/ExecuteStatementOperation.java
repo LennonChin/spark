@@ -29,6 +29,7 @@ import org.apache.hive.service.cli.session.HiveSession;
 
 public abstract class ExecuteStatementOperation extends Operation {
   protected String statement = null;
+  // 记录查询相关（Queryspecific）的配置信息，这些配置信息仅应用于操作本身，不会扩大到Session范围。
   protected Map<String, String> confOverlay = new HashMap<String, String>();
 
   public ExecuteStatementOperation(HiveSession parentSession, String statement,
@@ -42,6 +43,7 @@ public abstract class ExecuteStatementOperation extends Operation {
     return statement;
   }
 
+  // 根据不同情况创建SQLOperation对象或HiveCommandOperation对象。
   public static ExecuteStatementOperation newExecuteStatementOperation(
       HiveSession parentSession, String statement, Map<String, String> confOverlay, boolean runAsync)
           throws HiveSQLException {

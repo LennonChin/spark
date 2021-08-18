@@ -93,8 +93,10 @@ public class HiveAuthFactory {
 
   public HiveAuthFactory(HiveConf conf) throws TTransportException {
     this.conf = conf;
-    transportMode = conf.getVar(HiveConf.ConfVars.HIVE_SERVER2_TRANSPORT_MODE);
-    authTypeStr = conf.getVar(HiveConf.ConfVars.HIVE_SERVER2_AUTHENTICATION);
+    // 传输模式
+    transportMode = conf.getVar(HiveConf.ConfVars.HIVE_SERVER2_TRANSPORT_MODE); // hive.server2.transport.mode，默认为binary
+    // 认证类型
+    authTypeStr = conf.getVar(HiveConf.ConfVars.HIVE_SERVER2_AUTHENTICATION); // hive.server2.authentication，默认为NONE
 
     // In http mode we use NOSASL as the default auth type
     if ("http".equalsIgnoreCase(transportMode)) {
@@ -105,17 +107,20 @@ public class HiveAuthFactory {
       if (authTypeStr == null) {
         authTypeStr = AuthTypes.NONE.getAuthName();
       }
-      if (authTypeStr.equalsIgnoreCase(AuthTypes.KERBEROS.getAuthName())) {
+      if (authTypeStr.equalsIgnoreCase(AuthTypes.KERBEROS.getAuthName())) { // KERBEROS
+        // 会创建一个HadoopThriftAuthBridge.Server对象saslServer，由此可见SparkThriftServer的Kerberos认证实现依赖Hive中的实现。
         saslServer = ShimLoader.getHadoopThriftAuthBridge()
-          .createServer(conf.getVar(ConfVars.HIVE_SERVER2_KERBEROS_KEYTAB),
-                        conf.getVar(ConfVars.HIVE_SERVER2_KERBEROS_PRINCIPAL));
+          .createServer(conf.getVar(ConfVars.HIVE_SERVER2_KERBEROS_KEYTAB), // hive.server2.authentication.kerberos.keytab
+                        conf.getVar(ConfVars.HIVE_SERVER2_KERBEROS_PRINCIPAL)); // hive.server2.authentication.kerberos.principal
         // start delegation token manager
         try {
           // rawStore is only necessary for DBTokenStore
           Object rawStore = null;
+
+          // hive.cluster.delegation.token.store.class，默认值org.apache.hadoop.hive.thrift.MemoryTokenStore
           String tokenStoreClass = conf.getVar(HiveConf.ConfVars.METASTORE_CLUSTER_DELEGATION_TOKEN_STORE_CLS);
 
-          if (tokenStoreClass.equals(DBTokenStore.class.getName())) {
+          if (tokenStoreClass.equals(DBTokenStore.class.getName())) { // org.apache.hadoop.hive.thrift.DBTokenStore
             HMSHandler baseHandler = new HiveMetaStore.HMSHandler(
                 "new db based metaserver", conf, true);
             rawStore = baseHandler.getMS();
@@ -141,6 +146,7 @@ public class HiveAuthFactory {
   public TTransportFactory getAuthTransFactory() throws LoginException {
     TTransportFactory transportFactory;
     if (authTypeStr.equalsIgnoreCase(AuthTypes.KERBEROS.getAuthName())) {
+      // 如果是Kerberos，则由saslServer创建，否则统一由PlainSaslHelper根据认证类型创建。
       try {
         transportFactory = saslServer.createTransportFactory(getSaslProperties());
       } catch (TTransportException e) {
@@ -170,8 +176,10 @@ public class HiveAuthFactory {
    */
   public TProcessorFactory getAuthProcFactory(ThriftCLIService service) throws LoginException {
     if (authTypeStr.equalsIgnoreCase(AuthTypes.KERBEROS.getAuthName())) {
+      // Kerberos方式由KerberosSaslHelper创建。
       return KerberosSaslHelper.getKerberosProcessorFactory(saslServer, service);
     } else {
+      // 其他类型统一由PlainSaslHelper创建。
       return PlainSaslHelper.getPlainProcessorFactory(service);
     }
   }

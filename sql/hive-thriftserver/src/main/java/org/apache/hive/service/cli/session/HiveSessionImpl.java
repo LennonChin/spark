@@ -93,6 +93,13 @@ public class HiveSessionImpl implements HiveSession {
   private volatile long lastAccessTime;
   private volatile long lastIdleTime;
 
+  /**
+   * @param protocol Thrift的协议版本
+   * @param username 用户名
+   * @param password 密码
+   * @param serverhiveConf 服务端的Hive配置信息
+   * @param ipAddress 客户端IP地址
+   */
   public HiveSessionImpl(TProtocolVersion protocol, String username, String password,
       HiveConf serverhiveConf, String ipAddress) {
     this.username = username;
@@ -129,6 +136,9 @@ public class HiveSessionImpl implements HiveSession {
    * Note that if doAs is true, this call goes through a proxy object,
    * which wraps the method logic in a UserGroupInformation#doAs.
    * That's why it is important to create SessionState here rather than in the constructor.
+   *
+   * 构造一个Hive的SessionState对象。
+   * 当服务端在同一个Session中执行多条查询语句时，这个SessionState会被复用。
    */
   public void open(Map<String, String> sessionConfMap) throws HiveSQLException {
     sessionState = new SessionState(hiveConf, username);

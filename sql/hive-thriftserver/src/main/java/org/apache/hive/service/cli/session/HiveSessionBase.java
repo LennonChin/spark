@@ -32,6 +32,7 @@ import java.io.File;
  */
 public interface HiveSessionBase {
 
+  // 客户端与服务端连接采用的Thrift协议版本
   TProtocolVersion getProtocolVersion();
 
   /**

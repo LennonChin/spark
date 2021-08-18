@@ -48,25 +48,30 @@ public abstract class Operation {
   public static final FetchOrientation DEFAULT_FETCH_ORIENTATION = FetchOrientation.FETCH_NEXT;
   public static final long DEFAULT_FETCH_MAX_ROWS = 100;
   protected boolean hasResultSet;
-  protected volatile HiveSQLException operationException;
+  protected volatile HiveSQLException operationException; // 用来表示异常
   protected final boolean runAsync;
-  protected volatile Future<?> backgroundHandle;
+  protected volatile Future<?> backgroundHandle; // 用来表示异步操作的返回值处理
   protected OperationLog operationLog;
   protected boolean isOperationLogEnabled;
 
-  private long operationTimeout;
-  private long lastAccessTime;
+  private long operationTimeout; // 用于判断Operation是否超时
+  private long lastAccessTime; //  用于记录上次访问的时间，在Operation创建时初始化
 
   protected static final EnumSet<FetchOrientation> DEFAULT_FETCH_ORIENTATION_SET =
       EnumSet.of(FetchOrientation.FETCH_NEXT,FetchOrientation.FETCH_FIRST);
 
+  /**
+   * @param parentSession 操作所属Session
+   * @param opType 操作类型
+   * @param runInBackground 操作是否后台执行
+   */
   protected Operation(HiveSession parentSession, OperationType opType, boolean runInBackground) {
     this.parentSession = parentSession;
     this.runAsync = runInBackground;
     this.opHandle = new OperationHandle(opType, parentSession.getProtocolVersion());
     lastAccessTime = System.currentTimeMillis();
     operationTimeout = HiveConf.getTimeVar(parentSession.getHiveConf(),
-        HiveConf.ConfVars.HIVE_SERVER2_IDLE_OPERATION_TIMEOUT, TimeUnit.MILLISECONDS);
+        HiveConf.ConfVars.HIVE_SERVER2_IDLE_OPERATION_TIMEOUT, TimeUnit.MILLISECONDS); // hive.server2.idle.operation.timeout，默认5天（hive 1.2.1）
   }
 
   public Future<?> getBackgroundHandle() {
@@ -179,6 +184,7 @@ public abstract class Operation {
     return OperationState.ERROR.equals(state);
   }
 
+  // 创建日志文件和相应的OperationLog并将其设置到Hive的CurrentOperationLog中
   protected void createOperationLog() {
     if (parentSession.isOperationLogEnabled()) {
       File operationLogFile = new File(parentSession.getOperationLogSessionDir(),
@@ -219,10 +225,12 @@ public abstract class Operation {
       }
 
       // register this operationLog to current thread
+      // 注册operationLog到Hive的CurrentOperationLog中
       OperationLog.setCurrentOperationLog(operationLog);
     }
   }
 
+  // 将日志文件和相应的OperationLog从CurrentOperationLog中移除。
   protected void unregisterOperationLog() {
     if (isOperationLogEnabled) {
       OperationLog.removeCurrentOperationLog();
@@ -247,6 +255,9 @@ public abstract class Operation {
 
   /**
    * Implemented by subclass of Operation class to execute specific behaviors.
+   *
+   * 由具体的子类实现
+   *
    * @throws HiveSQLException
    */
   protected abstract void runInternal() throws HiveSQLException;

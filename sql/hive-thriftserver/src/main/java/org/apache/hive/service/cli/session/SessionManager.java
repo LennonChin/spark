@@ -51,16 +51,20 @@ public class SessionManager extends CompositeService {
   private static final Log LOG = LogFactory.getLog(CompositeService.class);
   public static final String HIVERCFILE = ".hiverc";
   private HiveConf hiveConf;
+
+  // 记录所有SessionHandle到HiveSession之间的映射，每次执行openSession操作后都会将得到的HiveSession加入到该数据结构中。
   private final Map<SessionHandle, HiveSession> handleToSession =
       new ConcurrentHashMap<SessionHandle, HiveSession>();
+  // 操作管理器，创建每个HiveSession之后，都会调用setOperationManager方法完成对OperationManager的设置。
   private final OperationManager operationManager = new OperationManager();
+  // 管理所有后台运行操作的线程池，该线程池的大小通过参数hive.server2.async.exec.threads进行设置，默认为100。
   private ThreadPoolExecutor backgroundOperationPool;
   private boolean isOperationLogEnabled;
   private File operationLogRootDir;
 
-  private long checkInterval;
-  private long sessionTimeout;
-  private boolean checkOperation;
+  private long checkInterval; // Session超时检测间隔
+  private long sessionTimeout; // Session超时时间
+  private boolean checkOperation; // 是否检测Operation超时
 
   private volatile boolean shutdown;
   // The HiveServer2 instance running this service
@@ -103,11 +107,11 @@ public class SessionManager extends CompositeService {
     backgroundOperationPool.allowCoreThreadTimeOut(true);
 
     checkInterval = HiveConf.getTimeVar(
-        hiveConf, ConfVars.HIVE_SERVER2_SESSION_CHECK_INTERVAL, TimeUnit.MILLISECONDS);
+        hiveConf, ConfVars.HIVE_SERVER2_SESSION_CHECK_INTERVAL, TimeUnit.MILLISECONDS); // hive.server2.session.check.interval，默认6小时
     sessionTimeout = HiveConf.getTimeVar(
-        hiveConf, ConfVars.HIVE_SERVER2_IDLE_SESSION_TIMEOUT, TimeUnit.MILLISECONDS);
+        hiveConf, ConfVars.HIVE_SERVER2_IDLE_SESSION_TIMEOUT, TimeUnit.MILLISECONDS); // hive.server2.idle.session.timeout，默认7天
     checkOperation = HiveConf.getBoolVar(hiveConf,
-        ConfVars.HIVE_SERVER2_IDLE_SESSION_CHECK_OPERATION);
+        ConfVars.HIVE_SERVER2_IDLE_SESSION_CHECK_OPERATION); // hive.server2.idle.session.check.operation，默认true
   }
 
   private void initOperationLogRootDir() {
@@ -231,7 +235,8 @@ public class SessionManager extends CompositeService {
    * @param password
    * @param ipAddress
    * @param sessionConf
-   * @param withImpersonation
+   * @param withImpersonation withImpersonation为true时，delegationToken一般也不为空，此时创建的对象是HiveSessionImplwithUGI，
+   *                          并通过HiveSessionProxy得到代理对象来调用相关方法（实际上将方法调用封装在UserGroup Information的doAs模块中）。
    * @param delegationToken
    * @return
    * @throws HiveSQLException

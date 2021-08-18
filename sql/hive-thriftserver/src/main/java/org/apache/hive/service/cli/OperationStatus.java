@@ -21,6 +21,7 @@ package org.apache.hive.service.cli;
 /**
  * OperationStatus
  *
+ * 在OperationState的基础上包含了异常信息（HiveSQLException）。
  */
 public class OperationStatus {
 

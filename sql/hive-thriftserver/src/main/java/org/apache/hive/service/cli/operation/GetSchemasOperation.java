@@ -53,14 +53,16 @@ public class GetSchemasOperation extends MetadataOperation {
 
   @Override
   public void runInternal() throws HiveSQLException {
-    setState(OperationState.RUNNING);
-    if (isAuthV2Enabled()) {
+    setState(OperationState.RUNNING); // 设置状态
+    if (isAuthV2Enabled()) { // 检查权限
       String cmdStr = "catalog : " + catalogName + ", schemaPattern : " + schemaName;
       authorizeMetaGets(HiveOperationType.GET_SCHEMAS, null, cmdStr);
     }
     try {
+      // 获取MetaStoreClient
       IMetaStoreClient metastoreClient = getParentSession().getMetaStoreClient();
       String schemaPattern = convertSchemaPattern(schemaName);
+      // 获取Database信息
       for (String dbName : metastoreClient.getDatabases(schemaPattern)) {
         rowSet.addRow(new Object[] {dbName, DEFAULT_HIVE_CATALOG});
       }

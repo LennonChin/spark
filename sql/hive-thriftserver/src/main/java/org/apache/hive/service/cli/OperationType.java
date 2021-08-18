@@ -23,6 +23,7 @@ import org.apache.hive.service.cli.thrift.TOperationType;
 /**
  * OperationType.
  *
+ * 对Thrift生成的TOperationType进行包装
  */
 public enum OperationType {
 

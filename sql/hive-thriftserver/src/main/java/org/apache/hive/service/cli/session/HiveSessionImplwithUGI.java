@@ -36,6 +36,8 @@ import org.apache.hive.service.cli.thrift.TProtocolVersion;
  *
  * HiveSessionImplwithUGI.
  * HiveSession with connecting user's UGI and delegation token if required
+ *
+ * 加上了UGI（User Group Information）的管理。
  */
 public class HiveSessionImplwithUGI extends HiveSessionImpl {
   public static final String HS2TOKEN = "HiveServer2ImpersonationToken";

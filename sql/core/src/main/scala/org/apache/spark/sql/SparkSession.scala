@@ -842,7 +842,7 @@ object SparkSession {
      */
     def enableHiveSupport(): Builder = synchronized {
       if (hiveClassesArePresent) {
-        config(CATALOG_IMPLEMENTATION.key, "hive")
+        config(CATALOG_IMPLEMENTATION.key, "hive") // 将Catalog实现spark.sql.catalogImplementation设置为hive
       } else {
         throw new IllegalArgumentException(
           "Unable to instantiate SparkSession with Hive support because " +
@@ -1053,7 +1053,7 @@ object SparkSession {
    */
   private[spark] def hiveClassesArePresent: Boolean = {
     try {
-      Utils.classForName(HIVE_SESSION_STATE_CLASS_NAME)
+      Utils.classForName(HIVE_SESSION_STATE_CLASS_NAME) // org.apache.spark.sql.hive.HiveSessionState
       Utils.classForName("org.apache.hadoop.hive.conf.HiveConf")
       true
     } catch {

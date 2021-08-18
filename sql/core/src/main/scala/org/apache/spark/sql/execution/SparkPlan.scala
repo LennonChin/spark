@@ -369,6 +369,7 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
 
   protected def newPredicate(
       expression: Expression, inputSchema: Seq[Attribute]): GenPredicate = {
+    // 生成Predicate类，完成过滤算子的逻辑。
     GeneratePredicate.generate(expression, inputSchema)
   }
 

@@ -23,6 +23,7 @@ import org.apache.hive.service.cli.thrift.TOperationState;
 /**
  * OperationState.
  *
+ * 对Thrift生成的OperationState进行包装
  */
 public enum OperationState {
   INITIALIZED(TOperationState.INITIALIZED_STATE, false),

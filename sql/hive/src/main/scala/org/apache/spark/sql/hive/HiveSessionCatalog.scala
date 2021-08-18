@@ -122,6 +122,15 @@ private[sql] class HiveSessionCatalog(
     (children: Seq[Expression]) => {
       try {
         if (classOf[UDF].isAssignableFrom(clazz)) {
+          /**
+           * 创建HiveSim pleUDF对象。
+           * 构造的参数有3个，分别是：
+           * - 函数名（name）
+           * - 根据UDF类clazz得到的HiveFunctionWrapper（clazz.getName）
+           * - UDF输入参数（children: Seq[Expression]）
+           *
+           * HiveFunctionWrapper实现了对Hive中UDF函数的封装，在Spark SQL的HiveUDF管理中起着重要作用。
+           */
           val udf = HiveSimpleUDF(name, new HiveFunctionWrapper(clazz.getName), children)
           udf.dataType // Force it to check input data types.
           udf

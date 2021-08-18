@@ -244,6 +244,8 @@ private[hive] trait HiveInspectors {
 
   /**
    * Wraps with Hive types based on object inspector.
+   *
+   * Catalyst type -> Hive type
    */
   protected def wrapperFor(oi: ObjectInspector, dataType: DataType): Any => Any = oi match {
     case _ if dataType.isInstanceOf[UserDefinedType[_]] =>
@@ -362,10 +364,13 @@ private[hive] trait HiveInspectors {
       }
 
     case soi: StructObjectInspector =>
+      // 将dataType转换为具体的StructType类型
       val structType = dataType.asInstanceOf[StructType]
+      // 针对StructType中每个字段得到封装函数，最终得到的是一个封装函数数组
       val wrappers = soi.getAllStructFieldRefs.asScala.zip(structType).map {
         case (ref, tpe) => wrapperFor(ref.getFieldObjectInspector, tpe.dataType)
       }
+      // 单独处理null的情况
       withNullSafe { o =>
         val row = o.asInstanceOf[InternalRow]
         val result = new java.util.ArrayList[AnyRef](wrappers.size)
@@ -417,6 +422,8 @@ private[hive] trait HiveInspectors {
    * Extract the java object directly from the object inspector
    *
    * NOTICE: the complex data type requires recursive unwrapping.
+   *
+   * Hive type -> Catalyst type
    *
    * @param objectInspector the ObjectInspector used to create an unwrapper.
    * @return A function that unwraps data objects.
@@ -837,6 +844,7 @@ private[hive] trait HiveInspectors {
     case _ => toInspector(expr.dataType)
   }
 
+  // 从ObjectInspector确定DataType，直接枚举所有情况
   def inspectorToDataType(inspector: ObjectInspector): DataType = inspector match {
     case s: StructObjectInspector =>
       StructType(s.getAllStructFieldRefs.asScala.map(f =>

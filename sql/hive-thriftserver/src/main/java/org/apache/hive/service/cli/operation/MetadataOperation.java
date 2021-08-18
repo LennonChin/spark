@@ -72,6 +72,8 @@ public abstract class MetadataOperation extends Operation {
   /**
    * Convert wildchars and escape sequence of schema pattern from JDBC format to datanucleous/regex
    * The schema pattern treats empty string also as wildchar
+   *
+   * 将JDBC中的通配符和转义字符转换为正则表达式中的对应字符
    */
   protected String convertSchemaPattern(final String pattern) {
     if ((pattern == null) || pattern.isEmpty()) {
@@ -109,7 +111,7 @@ public abstract class MetadataOperation extends Operation {
   protected boolean isAuthV2Enabled(){
     SessionState ss = SessionState.get();
     return (ss.isAuthorizationModeV2() &&
-        HiveConf.getBoolVar(ss.getConf(), HiveConf.ConfVars.HIVE_AUTHORIZATION_ENABLED));
+        HiveConf.getBoolVar(ss.getConf(), HiveConf.ConfVars.HIVE_AUTHORIZATION_ENABLED)); // hive.security.authorization.enabled
   }
 
   protected void authorizeMetaGets(HiveOperationType opType, List<HivePrivilegeObject> inpObjs)
@@ -117,6 +119,7 @@ public abstract class MetadataOperation extends Operation {
     authorizeMetaGets(opType, inpObjs, null);
   }
 
+  // 对操作元数据的权限进行验证
   protected void authorizeMetaGets(HiveOperationType opType, List<HivePrivilegeObject> inpObjs,
       String cmdString) throws HiveSQLException {
     SessionState ss = SessionState.get();

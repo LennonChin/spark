@@ -49,9 +49,13 @@ private[hive] class SparkExecuteStatementOperation(
   extends ExecuteStatementOperation(parentSession, statement, confOverlay, runInBackground)
   with Logging {
 
+  // 执行SQL语句生成的结果
   private var result: DataFrame = _
+  // 结果集迭代器
   private var iter: Iterator[SparkRow] = _
+  // 结果集头部迭代器
   private var iterHeader: Iterator[SparkRow] = _
+  // 数据类型
   private var dataTypes: Array[DataType] = _
   private var statementId: String = _
 
@@ -217,6 +221,7 @@ private[hive] class SparkExecuteStatementOperation(
       sqlContext.sparkContext.setLocalProperty("spark.scheduler.pool", pool)
     }
     try {
+      // 直接调用SQLContext的sql方法，最终调用的是SparkSession的sql方法。
       result = sqlContext.sql(statement)
       logDebug(result.queryExecution.toString())
       result.queryExecution.logical match {

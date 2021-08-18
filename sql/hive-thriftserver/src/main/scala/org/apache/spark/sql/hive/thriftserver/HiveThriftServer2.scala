@@ -74,12 +74,15 @@ object HiveThriftServer2 extends Logging {
 
   def main(args: Array[String]) {
     Utils.initDaemon(log)
+    // 解析参数
     val optionsProcessor = new HiveServer2.ServerOptionsProcessor("HiveThriftServer2")
     optionsProcessor.parse(args)
 
     logInfo("Starting SparkContext")
+    // 初始化SparkSQLEnv，完成SQLContext和SparkContext的构造。
     SparkSQLEnv.init()
 
+    // 添加JVM shutdown hook
     ShutdownHookManager.addShutdownHook { () =>
       SparkSQLEnv.stop()
       uiTab.foreach(_.detach())
@@ -90,12 +93,17 @@ object HiveThriftServer2 extends Logging {
       SparkSQLEnv.sqlContext.sessionState.newHadoopConf())
 
     try {
+      // 构造并初始化HiveThriftServer2
       val server = new HiveThriftServer2(SparkSQLEnv.sqlContext)
       server.init(executionHive.conf)
       server.start()
       logInfo("HiveThriftServer2 started")
+
+      // 注册一个监听器（HiveThriftServer2Listener）来处理JobStart等事件
       listener = new HiveThriftServer2Listener(server, SparkSQLEnv.sqlContext.conf)
       SparkSQLEnv.sparkContext.addSparkListener(listener)
+
+      // 添加ThriftServer对应的UI页面（ThriftServerTab）
       uiTab = if (SparkSQLEnv.sparkContext.getConf.getBoolean("spark.ui.enabled", true)) {
         Some(new ThriftServerTab(SparkSQLEnv.sparkContext))
       } else {

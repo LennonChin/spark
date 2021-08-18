@@ -48,8 +48,8 @@ import org.apache.spark.util.Utils
 private[hive]
 case class HiveTableScanExec(
     requestedAttributes: Seq[Attribute],
-    relation: MetastoreRelation,
-    partitionPruningPred: Seq[Expression])(
+    relation: MetastoreRelation, // 代表Hive数据表的Relation
+    partitionPruningPred: Seq[Expression])( // 代表Hive分区的谓词
     @transient private val sparkSession: SparkSession)
   extends LeafExecNode {
 
@@ -143,7 +143,7 @@ case class HiveTableScanExec(
   protected override def doExecute(): RDD[InternalRow] = {
     // Using dummyCallSite, as getCallSite can turn out to be expensive with
     // with multiple partitions.
-    val rdd = if (!relation.hiveQlTable.isPartitioned) {
+    val rdd = if (!relation.hiveQlTable.isPartitioned) { // 无分区
       Utils.withDummyCallSite(sqlContext.sparkContext) {
         hadoopReader.makeRDDForTable(relation.hiveQlTable)
       }

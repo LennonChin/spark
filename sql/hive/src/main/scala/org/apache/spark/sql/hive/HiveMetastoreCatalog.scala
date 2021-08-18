@@ -282,6 +282,8 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
   /**
    * When scanning or writing to non-partitioned Metastore Parquet tables, convert them to Parquet
    * data source relations for better performance.
+   *
+   * 当对一个非分区的Parquet表扫描或读写时，将其转换为Parquet格式数据源的LogicalRelation，以获得更好的性能。
    */
   object ParquetConversions extends Rule[LogicalPlan] {
     private def shouldConvertMetastoreParquet(relation: MetastoreRelation): Boolean = {
@@ -322,6 +324,8 @@ private[hive] class HiveMetastoreCatalog(sparkSession: SparkSession) extends Log
   /**
    * When scanning Metastore ORC tables, convert them to ORC data source relations
    * for better performance.
+   *
+   * 当扫描一个ORC格式的表时，将其转换为ORC格式数据的LogicalRelation，以获取更好的性能。
    */
   object OrcConversions extends Rule[LogicalPlan] {
     private def shouldConvertMetastoreOrc(relation: MetastoreRelation): Boolean = {
