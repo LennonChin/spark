@@ -152,6 +152,7 @@ object UnsafeProjection {
       .map(_ transform {
         case CreateNamedStruct(children) => CreateNamedStructUnsafe(children)
     })
+    // 生成UnsafeProjection类，完成投影算子的逻辑。
     GenerateUnsafeProjection.generate(e, subexpressionEliminationEnabled)
   }
 }

@@ -326,16 +326,43 @@ case class FileSourceScanExec(
     if (supportsBatch) {
       return doProduceVectorized(ctx)
     }
+    /**
+     * 添加scan_numOutputRows变量，类型为SQLMetric，用来记录从文件中读取的数据行数，
+     * scan_前缀在CodegenSupport的variablePrefix方法中定义。
+     * 类型：org.apache.spark.sql.execution.metric.SQLMetric
+     * 变量名：scan_numOutputRows
+     * 初始化代码：this.scan_numOutputRows = (org.apache.spark.sql.execution.metric.SQLMetric)references[0];
+     */
     val numOutputRows = metricTerm(ctx, "numOutputRows")
     // PhysicalRDD always just has one input
+    /**
+     * 添加Iterator类型的scan_input变量，用来不断读取数据。
+     * 类型：scala.collection.Iterator
+     * 变量名：scan_input
+     * 初始化代码：scan_input = inputs[0];
+     */
     val input = ctx.freshName("input")
     ctx.addMutableState("scala.collection.Iterator", input, s"$input = inputs[0];")
     val exprRows = output.zipWithIndex.map{ case (a, i) =>
       new BoundReference(i, a.dataType, a.nullable)
     }
+
+    /**
+     * 当前读取的数据行（InternalRow）在生成的代码中对应命名为scan_row的变量
+     * 将CodegenContext的INPUT_ROW变量指向scan_row变量。
+     */
     val row = ctx.freshName("row")
     ctx.INPUT_ROW = row
     ctx.currentVars = null
+    /**
+     * project person.age
+     * boolean scan_isNull = scan_row.isNullAt(0);
+     * long scan_value= scan_isNull ? -1L : (scan_row.getLong(0));
+     *
+     * project person.name
+     * boolean scan_isNull1 = scan_row.isNullAt(1);
+     * UTF8String scan_value1 = scan_isNUll1 ? null : (scan_row.getUTF8String(1));
+     */
     val columnsRowInput = exprRows.map(_.genCode(ctx))
     val inputRow = if (needsUnsafeRowConversion) null else row
     s"""

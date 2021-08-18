@@ -76,11 +76,15 @@ case class SubExprCodes(codes: Seq[String], states: Map[Expression, SubExprElimi
 /**
  * A context for codegen, tracking a list of objects that could be passed into generated Java
  * function.
+ *
+ * 代码生成的上下文，记录了将要生成的代码中的各种元素，包括变量、函数等。
  */
 class CodegenContext {
 
   /**
    * Holding a list of objects that could be used passed into generated class.
+   *
+   * 用来保存生成代码中的对象（objects），可以通过addReferenceObj方法添加。
    */
   val references: mutable.ArrayBuffer[Any] = new mutable.ArrayBuffer[Any]()
 
@@ -91,6 +95,8 @@ class CodegenContext {
    *
    * This is for minor objects not to store the object into field but refer it from the references
    * field at the time of use because number of fields in class is limited so we should reduce it.
+   *
+   * 向references中添加对象
    */
   def addReferenceObj(obj: Any): String = {
     val idx = references.length
@@ -116,6 +122,8 @@ class CodegenContext {
   /**
    * Holding a list of generated columns as input of current operator, will be used by
    * BoundReference to generate code.
+   *
+   * 记录生成的各列作为当前算子的输入
    */
   var currentVars: Seq[ExprCode] = null
 
@@ -143,10 +151,14 @@ class CodegenContext {
    * to the constructor.
    *
    * They will be kept as member variables in generated classes like `SpecificProjection`.
+   *
+   * 变量数组，元素为三个元素的Tuple
+   * Tuple(数据类型, 变量名称, 初始代码)
    */
   val mutableStates: mutable.ArrayBuffer[(String, String, String)] =
     mutable.ArrayBuffer.empty[(String, String, String)]
 
+  // 添加变量，指定类型，名称和初始化代码
   def addMutableState(javaType: String, variableName: String, initCode: String): Unit = {
     mutableStates += ((javaType, variableName, initCode))
   }
@@ -155,6 +167,9 @@ class CodegenContext {
    * Add buffer variable which stores data coming from an [[InternalRow]]. This methods guarantees
    * that the variable is safely stored, which is important for (potentially) byte array backed
    * data types like: UTF8String, ArrayData, MapData & InternalRow.
+   *
+   * 添加缓冲变量，缓冲变量一般用来存储来自InternalRow中的数据，比如一行数据中的某些列等。
+   * 因此，这些变量仅在类中声明，但是不会在初始化函数中执行，该方法返回的是ExprCode对象。
    */
   def addBufferedState(dataType: DataType, variableName: String, initCode: String): ExprCode = {
     val value = freshName(variableName)
@@ -167,6 +182,7 @@ class CodegenContext {
     ExprCode(code, "false", value)
   }
 
+  // 在生成的Java类中声明这些变量（默认均为private类型）。
   def declareMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
@@ -175,6 +191,7 @@ class CodegenContext {
     }.mkString("\n")
   }
 
+  // 在类的初始化函数中生成变量的初始化代码，输出的元素都是每行一个。
   def initMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
@@ -187,23 +204,31 @@ class CodegenContext {
   /**
    * Code statements to initialize states that depend on the partition index.
    * An integer `partitionIndex` will be made available within the scope.
+   *
+   * 对于Spark RDD的处理，有些处理逻辑中可能会涉及RDD分区的下标（partition Index）。
+   * 字符串类型的数组，提供了添加相关代码的方法addPartitionInitializationStatement和代码初始化相关的initPartition方法。
    */
   val partitionInitializationStatements: mutable.ArrayBuffer[String] = mutable.ArrayBuffer.empty
 
+  // 添加相关代码
   def addPartitionInitializationStatement(statement: String): Unit = {
     partitionInitializationStatements += statement
   }
 
+  // 代码初始化相关
   def initPartition(): String = {
     partitionInitializationStatements.mkString("\n")
   }
 
   /**
    * Holding all the functions those will be added into generated class.
+   * 辅助函数，字典类型，提供了函数名和函数代码的映射关系。
+   * Map(函数名, 函数代码)
    */
   val addedFunctions: mutable.Map[String, String] =
     mutable.Map.empty[String, String]
 
+  // 添加函数
   def addNewFunction(funcName: String, funcCode: String): Unit = {
     addedFunctions += ((funcName, funcCode))
   }
@@ -229,6 +254,7 @@ class CodegenContext {
   // The collection of sub-expression result resetting methods that need to be called on each row.
   val subexprFunctions = mutable.ArrayBuffer.empty[String]
 
+  // 声明函数
   def declareAddedFunctions(): String = {
     addedFunctions.map { case (funcName, funcCode) => funcCode }.mkString("\n")
   }
@@ -262,6 +288,7 @@ class CodegenContext {
 
   /**
    * Returns a term name that is unique within this instance of a `CodegenContext`.
+   * 与类型为HashMap[String, Int]的freshNameIds配合，用来生成具有唯一ID的变量名
    */
   def freshName(name: String): String = synchronized {
     val fullName = if (freshNamePrefix == "") {
@@ -419,6 +446,7 @@ class CodegenContext {
 
   /**
    * Returns the Java type for a DataType.
+   * Spark Data类型向Java类型的映射
    */
   def javaType(dt: DataType): String = dt match {
     case BooleanType => JAVA_BOOLEAN
@@ -443,6 +471,7 @@ class CodegenContext {
 
   /**
    * Returns the boxed type in Java.
+   * Java基本类型向Java包装类型的映射
    */
   def boxedType(jt: String): String = jt match {
     case JAVA_BOOLEAN => "Boolean"
@@ -459,6 +488,7 @@ class CodegenContext {
 
   /**
    * Returns the representation of default value for a given Java Type.
+   * Java基本类型的初始默认值。
    */
   def defaultValue(jt: String): String = jt match {
     case JAVA_BOOLEAN => "false"
@@ -595,6 +625,8 @@ class CodegenContext {
   /**
    * Generates code to do null safe execution, i.e. only execute the code when the input is not
    * null by adding null check if necessary.
+   *
+   * 对通常的代码添加null检测的逻辑。
    *
    * @param nullable used to decide whether we should add null check or not.
    * @param isNull the code to check if the input is null.
@@ -846,6 +878,13 @@ class CodeAndComment(val body: String, val comment: collection.Map[String, Strin
  * A base class for generators of byte code to perform expression evaluation.  Includes a set of
  * helpers for referring to Catalyst types and building trees that perform evaluation of individual
  * expressions.
+ *
+ * 代码生成的过程由代码生成器（CodeGenerator）完成，对外提供生成代码的接口是generate。
+ * 在Spark SQL中，CodeGenerator的子类共有7个，
+ * 包括生成SpecificOrdering的GenerateOrdering类、生成Predicate用于谓词处理的GeneratePredicate类等。
+ *
+ * 经过CodeGenerator类生成后的代码，由其伴生对象提供的compile方法进行编译，得到GeneratedClass的子类。
+ * GeneratedClass仅仅起到封装生成类的作用，在具体应用时会调用generate方法显示地强制转换得到生成的类。
  */
 abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Logging {
 
@@ -866,11 +905,19 @@ abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Loggin
   /** Binds an input expression to a given input schema */
   protected def bind(in: InType, inputSchema: Seq[Attribute]): InType
 
-  /** Generates the requested evaluator binding the given expression(s) to the inputSchema. */
+  /**
+   * Generates the requested evaluator binding the given expression(s) to the inputSchema.
+   *
+   * 对外提供的生成代码的接口。
+   * */
   def generate(expressions: InType, inputSchema: Seq[Attribute]): OutType =
     generate(bind(expressions, inputSchema))
 
-  /** Generates the requested evaluator given already bound expression(s). */
+  /**
+   * Generates the requested evaluator given already bound expression(s).
+   *
+   * 对外提供的生成代码的接口。
+   * */
   def generate(expressions: InType): OutType = create(canonicalize(expressions))
 
   /**
@@ -885,6 +932,8 @@ abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Loggin
 object CodeGenerator extends Logging {
   /**
    * Compile the Java source code into a Java class, using Janino.
+   * 经过CodeGenerator类生成后的代码，由其伴生对象提供的compile方法进行编译，得到GeneratedClass的子类。
+   * GeneratedClass仅仅起到封装生成类的作用，在具体应用时会调用generate方法显示地强制转换得到生成的类。
    */
   def compile(code: CodeAndComment): GeneratedClass = {
     cache.get(code)
@@ -995,6 +1044,7 @@ object CodeGenerator extends Logging {
       new CacheLoader[CodeAndComment, GeneratedClass]() {
         override def load(code: CodeAndComment): GeneratedClass = {
           val startTime = System.nanoTime()
+          // 编译代码
           val result = doCompile(code)
           val endTime = System.nanoTime()
           def timeMs: Double = (endTime - startTime).toDouble / 1000000

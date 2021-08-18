@@ -33,10 +33,14 @@ import org.apache.spark.util.Utils
 
 /**
  * An interface for those physical operators that support codegen.
+ * 支持Codegen的物理操作
  */
 trait CodegenSupport extends SparkPlan {
 
-  /** Prefix used in the current operator's variable names. */
+  /**
+   * Prefix used in the current operator's variable names.
+   * 表示对应的物理算子节点生成的代码中变量名的前缀。不同的节点类型其前缀不同。
+   **/
   private def variablePrefix: String = this match {
     case _: HashAggregateExec => "agg"
     case _: BroadcastHashJoinExec => "bhj"
@@ -57,6 +61,7 @@ trait CodegenSupport extends SparkPlan {
 
   /**
    * Whether this SparkPlan support whole stage codegen or not.
+   * 判断是否支持代码生成。
    */
   def supportCodegen: Boolean = true
 
@@ -69,11 +74,15 @@ trait CodegenSupport extends SparkPlan {
    * Returns all the RDDs of InternalRow which generates the input rows.
    *
    * Note: right now we support up to two RDDs.
+   *
+   * 得产生输入数据的inputRDDs。
    */
   def inputRDDs(): Seq[RDD[InternalRow]]
 
   /**
    * Returns Java source code to process the rows from input RDD.
+   *
+   * 返回的是该节点及其子节点所生成的代码。会调用doProduce方法。
    */
   final def produce(ctx: CodegenContext, parent: CodegenSupport): String = executeQuery {
     this.parent = parent
@@ -106,12 +115,23 @@ trait CodegenSupport extends SparkPlan {
 
   /**
    * Consume the generated columns or row from current SparkPlan, call its parent's `doConsume()`.
+   *
+   * 返回的是该CodegenSupport节点处理数据核心逻辑所对应生成的代码。会调用其父节点的doConsume方法。
+   *
+   * 每个物理算子节点的consume方法将生成相应的代码来完成该节点的数据处理逻辑。
+   * consume方法将递归调用其父节点的doConsume方法，这样正好对应了子节点处理逻辑先于父节点处理逻辑的顺序关系。
+   *
+   * @param outputVars 对应列信息的变量列表（Seq[ExprCode]）
+   * @param row 表示当前数据行对应的变量（ExprCode）
+   * @return
    */
   final def consume(ctx: CodegenContext, outputVars: Seq[ExprCode], row: String = null): String = {
-    val inputVars =
-      if (row != null) {
+    // 下一步逻辑处理的变量inputVars，类型为Seq[ExprCode]，不同的变量代表不同的列。
+    val inputVars: Seq[ExprCode] =
+      if (row != null) { // 如果有行变量
         ctx.currentVars = null
-        ctx.INPUT_ROW = row
+        ctx.INPUT_ROW = row // 将CodegenContext对象的INPUT_ROW指向该行变量
+        // 返回值为该节点的输出字段对应的BoundReference生成的代码
         output.zipWithIndex.map { case (attr, i) =>
           BoundReference(i, attr.dataType, attr.nullable).genCode(ctx)
         }
@@ -119,10 +139,13 @@ trait CodegenSupport extends SparkPlan {
         assert(outputVars != null)
         assert(outputVars.length == output.length)
         // outputVars will be used to generate the code for UnsafeRow, so we should copy them
+        // 对outputVars执行copy操作，因为这里的outputVars变量会用到CodegenContext中的currentVars来生成UnsafeRow代码。
         outputVars.map(_.copy())
       }
 
+    // 生成rowVar，类型为ExprCode，代表整行数据的变量名。
     val rowVar = if (row != null) {
+      // 如果传入的行变量不为空，则直接对应该行变量的ExprCode对象
       ExprCode("", "false", row)
     } else {
       if (outputVars.nonEmpty) {
@@ -145,8 +168,9 @@ trait CodegenSupport extends SparkPlan {
       }
     }
 
-    ctx.freshNamePrefix = parent.variablePrefix
+    ctx.freshNamePrefix = parent.variablePrefix // 更新Context中的Prefix为父节点的Prefix
     val evaluated = evaluateRequiredVariables(output, inputVars, parent.usedInputs)
+    // 递归调用父节点的doConsume方法
     s"""
        |${ctx.registerComment(s"CONSUME: ${parent.simpleString}")}
        |$evaluated
@@ -157,6 +181,8 @@ trait CodegenSupport extends SparkPlan {
   /**
    * Returns source code to evaluate all the variables, and clear the code of them, to prevent
    * them to be evaluated twice.
+   *
+   * 得到按行分隔的所有code不为空的ExprCode代码，并将ExprCode对应的code设置为空
    */
   protected def evaluateVariables(variables: Seq[ExprCode]): String = {
     val evaluate = variables.filter(_.code != "").map(_.code.trim).mkString("\n")
@@ -167,6 +193,8 @@ trait CodegenSupport extends SparkPlan {
   /**
    * Returns source code to evaluate the variables for required attributes, and clear the code
    * of evaluated variables, to prevent them to be evaluated twice.
+   *
+   * 根据所需的列集合（AttributeSet）筛选出对应的ExprCode代码，其他操作和evaluateVariables方法中的逻辑相同。
    */
   protected def evaluateRequiredVariables(
       attributes: Seq[Attribute],
@@ -306,38 +334,46 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
   /**
    * Generates code for this subtree.
    *
+   * 生成代码的入口
+   *
    * @return the tuple of the codegen context and the actual generated source.
    */
   def doCodeGen(): (CodegenContext, CodeAndComment) = {
+    // 构造CodoegenContext。
     val ctx = new CodegenContext
+    // 将此对象作为CodegenSupport中produce方法的参数，直接调用produce方法生成具体的处理代码片段code。
     val code = child.asInstanceOf[CodegenSupport].produce(ctx, this)
+    // 基于code代码片段和代码生成之后的CodegenContext对象，构造完整的代码段。
     val source = s"""
+      // 静态方法，用于构造GeneratedIterator对象
       public Object generate(Object[] references) {
         return new GeneratedIterator(references);
       }
 
-      ${ctx.registerComment(s"""Codegend pipeline for\n${child.treeString.trim}""")}
+      ${ctx.registerComment(s"""Codegend pipeline for\n${child.treeString.trim}""")} // 注释
       final class GeneratedIterator extends org.apache.spark.sql.execution.BufferedRowIterator {
 
         private Object[] references;
         private scala.collection.Iterator[] inputs;
-        ${ctx.declareMutableStates()}
+        ${ctx.declareMutableStates()} // 变量定义
 
         public GeneratedIterator(Object[] references) {
           this.references = references;
         }
 
+        // 负责相关变量的初始化
         public void init(int index, scala.collection.Iterator[] inputs) {
           partitionIndex = index;
           this.inputs = inputs;
-          ${ctx.initMutableStates()}
+          ${ctx.initMutableStates()} // 遍历初始化
           ${ctx.initPartition()}
         }
 
-        ${ctx.declareAddedFunctions()}
+        ${ctx.declareAddedFunctions()} // 声明辅助函数
 
+        // 用于循环处理RDD中的数据行
         protected void processNext() throws java.io.IOException {
-          ${code.trim}
+          ${code.trim} // 实际代码
         }
       }
       """.trim
@@ -351,12 +387,15 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
   }
 
   override def doExecute(): RDD[InternalRow] = {
+    // Codegen生成代码
     val (ctx, cleanedSource) = doCodeGen()
     // try to compile and fallback if it failed
     try {
+      // 尝试使用Janino编译，内部有缓存机制，不会重复编译
       CodeGenerator.compile(cleanedSource)
     } catch {
-      case e: Exception if !Utils.isTesting && sqlContext.conf.wholeStageFallback =>
+      // 如果编译失败且配置回退机制（参数spark.sql.codegen.wholeStage默认为true），则代码生成将被舍弃转而执行Spark原生的逻辑。
+      case e: Exception if !Utils.isTesting && sqlContext.conf.wholeStageFallback => // spark.sql.codegen.fallback
         // We should already saw the error message
         logWarning(s"Whole-stage codegen disabled for this plan:\n $treeString")
         return child.execute()
@@ -365,11 +404,15 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
 
     val durationMs = longMetric("pipelineTime")
 
+    // 调用inputRDDs方法得到RDD列表后，会根据RDD的数量采取不同的处理逻辑。
     val rdds = child.asInstanceOf[CodegenSupport].inputRDDs()
+    // 代码生成最多支持对两个RDD进行处理
     assert(rdds.size <= 2, "Up to two input RDDs can be supported")
+
     if (rdds.length == 1) {
       rdds.head.mapPartitionsWithIndex { (index, iter) =>
-        val clazz = CodeGenerator.compile(cleanedSource)
+        val clazz = CodeGenerator.compile(cleanedSource) // 得到GeneratedClass
+        // 调用generate得到BufferedRowIterator
         val buffer = clazz.generate(references).asInstanceOf[BufferedRowIterator]
         buffer.init(index, Array(iter))
         new Iterator[InternalRow] {

@@ -71,6 +71,7 @@ case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
 
   protected override def doExecute(): RDD[InternalRow] = {
     child.execute().mapPartitionsWithIndexInternal { (index, iter) =>
+      // 会调用GenerateUnsafeProjection对象的generate方法生成UnsafeProjection类，完成投影算子的逻辑。
       val project = UnsafeProjection.create(projectList, child.output,
         subexpressionEliminationEnabled)
       project.initialize(index)
@@ -129,10 +130,18 @@ case class FilterExec(condition: Expression, child: SparkPlan)
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
+    /**
+     * 添加filter_numOutputRows变量，用来记录经过过滤处理之后的数据行数。
+     * - 变量名：filter_numOutputRows
+     * - 类型：SQLMetrics
+     * - 初始化代码：this.filter_numOutputRows = (org.apache.spark.sql.execution.metrics.SQLMetric) references[1];
+     */
     val numOutput = metricTerm(ctx, "numOutputRows")
 
     /**
      * Generates code for `c`, using `in` for input attributes and `attrs` for nullability.
+     *
+     * 过滤条件代码生成。
      */
     def genPredicate(c: Expression, in: Seq[ExprCode], attrs: Seq[Attribute]): String = {
       val bound = BindReferences.bindReference(c, attrs)
@@ -153,6 +162,7 @@ case class FilterExec(condition: Expression, child: SparkPlan)
        """.stripMargin
     }
 
+    // CodegenContext中的currentVars会设置为当前传递进来的输入变量所对应的ExprCode对象
     ctx.currentVars = input
 
     // To generate the predicates we will follow this algorithm.
@@ -213,6 +223,7 @@ case class FilterExec(condition: Expression, child: SparkPlan)
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
     child.execute().mapPartitionsWithIndexInternal { (index, iter) =>
+      // 会调用GeneratePredicate对象的generate方法生成Predicate类，完成过滤算子的逻辑。
       val predicate = newPredicate(condition, child.output)
       predicate.initialize(0)
       iter.filter { row =>

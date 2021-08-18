@@ -45,7 +45,9 @@ object GeneratePredicate extends CodeGenerator[Expression, Predicate] {
     BindReferences.bindReference(in, inputSchema)
 
   protected def create(predicate: Expression): Predicate = {
+    // 构造CodegenContext对象。
     val ctx = newCodeGenContext()
+    // 使用谓词表达式填充CodegenContext内部属性。
     val eval = predicate.genCode(ctx)
 
     val codeBody = s"""
@@ -55,18 +57,18 @@ object GeneratePredicate extends CodeGenerator[Expression, Predicate] {
 
       class SpecificPredicate extends ${classOf[Predicate].getName} {
         private final Object[] references;
-        ${ctx.declareMutableStates()}
+        ${ctx.declareMutableStates()} // 变量声明
 
         public SpecificPredicate(Object[] references) {
           this.references = references;
-          ${ctx.initMutableStates()}
+          ${ctx.initMutableStates()} // 变量初始化
         }
 
         public void initialize(int partitionIndex) {
-          ${ctx.initPartition()}
+          ${ctx.initPartition()} // 分区相关初始化
         }
 
-        ${ctx.declareAddedFunctions()}
+        ${ctx.declareAddedFunctions()} // 辅助函数
 
         public boolean eval(InternalRow ${ctx.INPUT_ROW}) {
           ${eval.code}

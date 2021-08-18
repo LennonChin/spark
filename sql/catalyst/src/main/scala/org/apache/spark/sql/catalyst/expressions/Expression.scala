@@ -117,6 +117,7 @@ abstract class Expression extends TreeNode[Expression] {
     }.getOrElse {
       val isNull = ctx.freshName("isNull")
       val value = ctx.freshName("value")
+      // 调用实际子类的doGenCode方法生成ExprCode
       val ve = doGenCode(ctx, ExprCode("", isNull, value))
       if (ve.code.nonEmpty) {
         // Add `this` in the comment.

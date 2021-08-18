@@ -70,7 +70,7 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
       ev.copy(code = code)
     } else if (nullable) {
       ev.copy(code = s"""
-        boolean ${ev.isNull} = ${ctx.INPUT_ROW}.iPsNullAt($ordinal);
+        boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
         $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(dataType)} : ($value);""")
     } else {
       ev.copy(code = s"""$javaType ${ev.value} = $value;""", isNull = "false")
