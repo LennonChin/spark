@@ -1037,7 +1037,7 @@ abstract class RDD[T: ClassTag](
   def collect(): Array[T] = withScope {
     val resultHandler = (iter: Iterator[T]) => {
       // 可见，有多少个分区，该结果处理器就会被调用多少次
-      println(">>>>> resultHandler")
+      logDebug(">>>>> resultHandler")
       iter.toArray
     }
     val results = sc.runJob(this, resultHandler)

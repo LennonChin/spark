@@ -186,7 +186,20 @@ class DAGScheduler(
    *
    * All accesses to this map should be guarded by synchronizing on it (see SPARK-4454).
     *
-    * 缓存每个RDD的所有分区的位置信息。每个RDD的分区按照分区号作为索引存储到IndexedSeq。
+    * 缓存每个RDD的所有分区的位置信息。
+    * Map的键是RDD的ID，值是RDD分区信息序列，RDD多个分区的信息顺序存储在IndexedSeq类型值中，
+    * 而每个分区存在多个TaskLocation信息，因此每个分区的信息其实是一个Seq[TaskLocation]序列，结构示意图如下：
+    *
+    * RDD-1   =>  【Partition-0 【TaskLocation-0, TaskLocation-1, ..., TaskLocation-X】】
+    *             【Partition-1 【TaskLocation-0, ..., TaskLocation-Y】】
+    *             【Partition-2 【TaskLocation-0, TaskLocation-1, ..., TaskLocation-Z】】
+    *             【Partition-N ...】
+    * RDD-2   =>  【Partition-0 【TaskLocation-0, ..., TaskLocation-X】】
+    *             【Partition-1 【TaskLocation-0, TaskLocation-1, ..., TaskLocation-Y】】
+    *             【Partition-2 【TaskLocation-0, TaskLocation-1, ..., TaskLocation-Z】】
+    *             【Partition-M ...】
+    *
+    * 每个RDD的分区按照分区号作为索引存储到IndexedSeq。
     * 由于RDD的每个分区作为一个Block以及存储体系的复制因素，
     * 因此RDD的每个分区的Block可能存在于多个节点的BlockManager上，
     * RDD每个分区的位置信息为TaskLocation的序列。
@@ -756,7 +769,7 @@ class DAGScheduler(
     // 分区数量大于0
     val func2 = func.asInstanceOf[(TaskContext, Iterator[_]) => _]
     // 创建JobWaiter
-    val waiter = new JobWaiter(this, jobId, partitions.size, resultHandler)
+    val waiter = new JobWaiter[U](this, jobId, partitions.size, resultHandler)
 
     /**
       * 将JobWaiter包装到JobSubmitted消息中，投递给DAGSchedulerEventProcessLoop，
@@ -1185,7 +1198,11 @@ class DAGScheduler(
           }.toMap
       }
     } catch {
-      // 如果发生任何异常，则调用Stage的makeNewStageAttempt()方法开始一次新的Stage执行尝试
+      /**
+       * 如果发生任何异常，则调用Stage的makeNewStageAttempt()方法开始一次新的Stage执行尝试
+       * 此处stage的makeNewStageAttempt的第二个参数为空，表示不存在计算过的Task的TaskLocation
+       * 意味着所有分区都需要重新计算。
+       */
       case NonFatal(e) =>
         stage.makeNewStageAttempt(partitionsToCompute.size)
         listenerBus.post(SparkListenerStageSubmitted(stage.latestInfo, properties))

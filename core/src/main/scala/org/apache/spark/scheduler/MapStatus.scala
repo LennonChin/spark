@@ -27,6 +27,8 @@ import org.apache.spark.util.Utils
 /**
  * Result returned by a ShuffleMapTask to a scheduler. Includes the block manager address that the
  * task ran on as well as the sizes of outputs for each reducer, for passing on to the reduce tasks.
+ *
+ * ShuffleMapTask执行后返回的结果，包含该Task运行的Executor上的BlockManager的地址信息，以及针对每个Reducer任务的输出数据大小。
  */
 private[spark] sealed trait MapStatus {
   /** Location where this task was run.

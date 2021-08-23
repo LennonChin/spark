@@ -435,8 +435,8 @@ private[spark] class TaskSchedulerImpl(
 
     // 遍历所有的TaskSetManager，如果有新的Executor添加就告诉它们，它们会重新计算支持的本地性级别。
     for (taskSet <- sortedTaskSets) {
-      logDebug("parentName: %s, name: %s, runningTasks: %s".format(
-        taskSet.parent.name, taskSet.name, taskSet.runningTasks))
+      logDebug("parentName: %s, name: %s, numTasks: %s, runningTasks: %s".format(
+        taskSet.parent.name, taskSet.name, taskSet.numTasks, taskSet.runningTasks))
       if (newExecAvail) {
         // 通知有新的Executor添加了，以触发TaskSetManager重新计算TaskSet的本地性
         taskSet.executorAdded()

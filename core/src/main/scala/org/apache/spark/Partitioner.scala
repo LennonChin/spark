@@ -55,8 +55,14 @@ object Partitioner {
    * be least likely to cause out-of-memory errors.
    *
    * We use two method parameters (rdd, others) to enforce callers passing at least 1 RDD.
-    *
-    * 根据传入的RDD来决定默认分区器，设置两个参数是为了让调用者至少传入一个RDD
+   *
+   * 根据传入的RDD来决定默认分区器，设置两个参数是为了让调用者至少传入一个RDD
+   *
+   * 可以传入多个父RDD参数：
+   * 1. 在传入的所有父RDD都没有设置分区器时：
+   *    1. 如果设置了spark.default.parallelism参数，以此参数值作为分区数创建HashPartitioner作为默认分区器。
+   *    2. 如果未设置spark.default.parallelism参数，选出所有父RDD中分区数最大的那个，以该RDD的分区数创建HashPartitioner作为默认分区器。
+   * 2. 如果有父RDD设置了分区器，就使用分区数最大的那个分区器作为默认的分区器。
    */
   def defaultPartitioner(rdd: RDD[_], others: RDD[_]*): Partitioner = {
     val rdds = (Seq(rdd) ++ others)

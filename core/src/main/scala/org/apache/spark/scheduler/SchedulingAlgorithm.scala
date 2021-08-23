@@ -47,8 +47,10 @@ private[spark] class FIFOSchedulingAlgorithm extends SchedulingAlgorithm {
 // 公平调度算法
 private[spark] class FairSchedulingAlgorithm extends SchedulingAlgorithm {
   override def comparator(s1: Schedulable, s2: Schedulable): Boolean = {
+    // minShare仅Pool池根据fairscheduler.xml文件配置，TaskSetManager该值恒为0
     val minShare1 = s1.minShare
     val minShare2 = s2.minShare
+    // runningTasks在TaskSetManager有值，Pool池该值为所包含的TaskSetManager的runningTasks的和
     val runningTasks1 = s1.runningTasks
     val runningTasks2 = s2.runningTasks
     // 处于运行状态的Task的数量是否小于s1的minShare

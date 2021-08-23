@@ -96,7 +96,7 @@ private[spark] class TaskResultGetter(sparkEnv: SparkEnv, scheduler: TaskSchedul
                 */
               scheduler.handleTaskGettingResult(taskSetManager, tid)
               /**
-               * IndirectTaskResult结果与DirectTaskResult，它没有携带真正的数据，
+               * IndirectTaskResult结果与DirectTaskResult不一样，它没有携带真正的数据，
                * 需要调用BlockManager的getRemoteBytes()方法，从运行Task的节点上下载Block
                */
               val serializedTaskResult = sparkEnv.blockManager.getRemoteBytes(blockId)
