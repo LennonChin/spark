@@ -51,6 +51,7 @@ case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extend
 
   // 既要满足所有表达式都已经解析，又要确认所有子节点已经解析且不包含特殊的表达式。
   override lazy val resolved: Boolean = {
+    // 存在聚合、UDTF（用户定义表生成函数）、窗口函数等特殊表达式
     val hasSpecialExpressions = projectList.exists ( _.collect {
         case agg: AggregateExpression => agg
         case generator: Generator => generator
@@ -58,6 +59,11 @@ case class Project(projectList: Seq[NamedExpression], child: LogicalPlan) extend
       }.nonEmpty
     )
 
+    /**
+     * 1. 表达式全部都被解析了。
+     * 2. 所有子节点都被解析了。
+     * 3. 不存在聚合、UDTF、窗口函数等特殊表达式。
+     */
     !expressions.exists(!_.resolved) && childrenResolved && !hasSpecialExpressions
   }
 
@@ -125,8 +131,8 @@ case class Filter(condition: Expression, child: LogicalPlan)
 
   // 会将condition表达式中的谓词逻辑与子节点中的约束整合
   override protected def validConstraints: Set[Expression] = {
-    val predicates = splitConjunctivePredicates(condition)
-      .filterNot(SubqueryExpression.hasCorrelatedSubquery)
+    val predicates = splitConjunctivePredicates(condition) // 合并And条件为序列
+      .filterNot(SubqueryExpression.hasCorrelatedSubquery) // 过滤掉子查询相关
     child.constraints.union(predicates.toSet)
   }
 }
@@ -705,42 +711,62 @@ object Limit {
   }
 }
 
+/**
+ * 全局Limit
+ * @param limitExpr limit表达式
+ * @param child 子节点
+ */
 case class GlobalLimit(limitExpr: Expression, child: LogicalPlan) extends UnaryNode {
+  // 输出直接是子节点的输出
   override def output: Seq[Attribute] = child.output
+
+  // 最大行数即是Limit表达式指定的行数
   override def maxRows: Option[Long] = {
     limitExpr match {
       case IntegerLiteral(limit) => Some(limit)
       case _ => None
     }
   }
+
+  // 统计信息
   override lazy val statistics: Statistics = {
     val limit = limitExpr.eval().asInstanceOf[Int]
-    val sizeInBytes = if (limit == 0) {
+    val sizeInBytes = if (limit == 0) { // 空行，1字节
       // sizeInBytes can't be zero, or sizeInBytes of BinaryNode will also be zero
       // (product of children).
       1
-    } else {
+    } else { // 每行每列之和
       (limit: Long) * output.map(a => a.dataType.defaultSize).sum
     }
     child.statistics.copy(sizeInBytes = sizeInBytes)
   }
 }
 
+/**
+ * 局部Limit
+ * @param limitExpr limit表达式
+ * @param child 子节点
+ */
 case class LocalLimit(limitExpr: Expression, child: LogicalPlan) extends UnaryNode {
+  // 输出直接是子节点的输出
   override def output: Seq[Attribute] = child.output
+
+  // 最大行数即是Limit表达式指定的行数
   override def maxRows: Option[Long] = {
     limitExpr match {
       case IntegerLiteral(limit) => Some(limit)
       case _ => None
     }
   }
+
+  // 统计信息
   override lazy val statistics: Statistics = {
     val limit = limitExpr.eval().asInstanceOf[Int]
-    val sizeInBytes = if (limit == 0) {
+    val sizeInBytes = if (limit == 0) { // 空行，1字节
       // sizeInBytes can't be zero, or sizeInBytes of BinaryNode will also be zero
       // (product of children).
       1
-    } else {
+    } else { // 每行每列之和
       (limit: Long) * output.map(a => a.dataType.defaultSize).sum
     }
     child.statistics.copy(sizeInBytes = sizeInBytes)

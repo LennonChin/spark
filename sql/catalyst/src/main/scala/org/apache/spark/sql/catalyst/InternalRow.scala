@@ -39,7 +39,7 @@ abstract class InternalRow extends SpecializedGetters with Serializable {
 
   def setNullAt(i: Int): Unit
 
-  // 更新某个字段的值
+  // 更新某个字段的值，i是下标，value是更新的值
   def update(i: Int, value: Any): Unit
 
   // default implementation (slow)

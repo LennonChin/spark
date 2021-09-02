@@ -45,7 +45,7 @@ private class MutableInt(var i: Int)
 /**
  * 根据TreeNode定位到对应的SQL字符串中的行数和起始位置
  *
- * @param line 行号
+ * @param line          行号
  * @param startPosition 偏移量
  */
 case class Origin(
@@ -128,6 +128,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
   /**
    * Runs the given function on this node and then recursively on [[children]].
+   *
    * @param f the function to be applied to each node in the tree.
    */
   def foreach(f: BaseType => Unit): Unit = {
@@ -137,6 +138,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
   /**
    * Runs the given function recursively on [[children]] then on this node.
+   *
    * @param f the function to be applied to each node in the tree.
    */
   def foreachUp(f: BaseType => Unit): Unit = {
@@ -147,6 +149,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Returns a Seq containing the result of applying the given function to each
    * node in this tree in a preorder traversal.
+   *
    * @param f the function to be applied.
    */
   def map[A](f: BaseType => A): Seq[A] = {
@@ -418,6 +421,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
   /**
    * Args to the constructor that should be copied, but not transformed.
    * These are appended to the transformed args automatically by makeCopy
+   *
    * @return
    */
   protected def otherCopyArgs: Seq[AnyRef] = Nil
@@ -426,6 +430,10 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Creates a copy of this type of tree node after a transformation.
    * Must be overridden by child classes that have constructor arguments
    * that are not present in the productIterator.
+   *
+   * 对转换后的树节点创建一份拷贝。
+   * 某些子类由于其某些构造参数并不会在在Product的参数序列中存在，因此可能会覆盖该方法。
+   *
    * @param newArgs the new product arguments.
    */
   def makeCopy(newArgs: Array[AnyRef]): BaseType = attachTree(this, "makeCopy") {
@@ -515,7 +523,7 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Returns a string representation of the nodes in this tree
    *
    * 将TreeNode以树型结构展示，在查看表达式、逻辑算子树和物理算子树时经常用到。
-   * */
+   **/
   def treeString: String = treeString(verbose = true)
 
   def treeString(verbose: Boolean): String = {
@@ -580,11 +588,11 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
    * Note that this traversal (numbering) order must be the same as [[getNodeNumbered]].
    */
   def generateTreeString(
-      depth: Int,
-      lastChildren: Seq[Boolean],
-      builder: StringBuilder,
-      verbose: Boolean,
-      prefix: String = ""): StringBuilder = {
+                          depth: Int,
+                          lastChildren: Seq[Boolean],
+                          builder: StringBuilder,
+                          verbose: Boolean,
+                          prefix: String = ""): StringBuilder = {
 
     if (depth > 0) {
       lastChildren.init.foreach { isLast =>
@@ -645,6 +653,23 @@ abstract class TreeNode[BaseType <: TreeNode[BaseType]] extends Product {
 
     collectJsonValue(this)
     jsonValues
+  }
+
+  // 嵌套的JSON结构
+  def nestedJson(isPretty: Boolean = false): String = if (isPretty) pretty(render(nestedJsonValue)) else compact(render(nestedJsonValue))
+
+  // 嵌套的JValue，会嵌套Children
+  def nestedJsonValue: JValue = {
+    def collectJsonValue(tn: BaseType): JValue = {
+      val jsonFields = ("class" -> JString(tn.getClass.getName)) ::
+        ("name" -> JString(tn.getClass.getSimpleName.replaceAll("$", ""))) ::
+        ("numChildren" -> JInt(tn.children.length)) ::
+        ("children" -> JArray(tn.children.map(collectJsonValue).toList)) ::
+        tn.jsonFields
+      JObject(jsonFields)
+    }
+
+    collectJsonValue(this)
   }
 
   protected def jsonFields: List[JField] = {

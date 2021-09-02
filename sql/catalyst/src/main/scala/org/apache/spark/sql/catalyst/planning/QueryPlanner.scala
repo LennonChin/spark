@@ -48,7 +48,7 @@ abstract class GenericStrategy[PhysicalPlan <: TreeNode[PhysicalPlan]] extends L
  * object that will be filled in using other available strategies.
  *
  * TODO: RIGHT NOW ONLY ONE PLAN IS RETURNED EVER...
- *       PLAN SPACE EXPLORATION WILL BE IMPLEMENTED LATER.
+ * PLAN SPACE EXPLORATION WILL BE IMPLEMENTED LATER.
  *
  * @tparam PhysicalPlan The type of physical plan produced by this [[QueryPlanner]]
  */
@@ -66,7 +66,10 @@ abstract class QueryPlanner[PhysicalPlan <: TreeNode[PhysicalPlan]] {
      * 返回类型是Iterator[PhysicalPlan]，即：
      * val candidates = strategies.iterator.flatMap(strategy => strategy(plan))
      */
-    val candidates = strategies.iterator.flatMap(_(plan))
+    val candidates = strategies.iterator.flatMap(strategy => {
+      val physicalPlans = strategy(plan)
+      physicalPlans
+    })
 
     // The candidates may contain placeholders marked as [[planLater]],
     // so try to replace them by their child plans.

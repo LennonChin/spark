@@ -27,6 +27,7 @@ import org.apache.spark.sql.catalyst.analysis.UnsupportedOperationChecker
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, ReturnAnswer}
 import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
+import org.apache.spark.sql.catalyst.util.debugger.PlanTreeTraversal
 import org.apache.spark.sql.execution.command.{DescribeTableCommand, ExecutedCommandExec, ShowTablesCommand}
 import org.apache.spark.sql.execution.exchange.{EnsureRequirements, ReuseExchange}
 import org.apache.spark.sql.types.{BinaryType, DateType, DecimalType, TimestampType, _}
@@ -99,7 +100,12 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
    */
   protected def prepareForExecution(plan: SparkPlan): SparkPlan = {
     // 执行前的准备，preparations返回类型是Seq[Rule[SparkPlan]]，也即是一个Rule集合
-    preparations.foldLeft(plan) { case (sp, rule) => rule.apply(sp) }
+    val result = preparations.foldLeft(plan) { case (sp, rule) => {
+      val prepared = rule.apply(sp)
+      prepared
+    } }
+    PlanTreeTraversal.dumpTraversal()
+    result
   }
 
   /** A sequence of rules that will be applied in order to the physical plan before execution. */

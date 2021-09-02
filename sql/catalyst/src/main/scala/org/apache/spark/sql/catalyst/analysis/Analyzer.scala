@@ -172,7 +172,7 @@ class Analyzer(
    */
   object CTESubstitution extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators  {
-      case With(child, relations) =>
+      case With(child, relations) => // With(QueryNoWith: LogicalPlan, NamedQueries: Seq[(String, SubqueryAlias)])
         substituteCTE(child, relations.foldLeft(Seq.empty[(String, LogicalPlan)]) {
           case (resolved, (name, relation)) =>
             resolved :+ name -> execute(substituteCTE(relation, resolved))
@@ -180,17 +180,99 @@ class Analyzer(
       case other => other
     }
 
+    /**
+     * 处理With语法里的Query
+     * @param plan NamedQuery子句
+     * @param cteRelations CTEs关系
+     * @return
+     */
     def substituteCTE(plan: LogicalPlan, cteRelations: Seq[(String, LogicalPlan)]): LogicalPlan = {
-      plan transformDown {
+      plan transformDown { // 先序遍历
         case u : UnresolvedRelation =>
-          val substituted = cteRelations.find(x => resolver(x._1, u.tableIdentifier.table))
+          /**
+           * 这一步操作会过滤掉CTEs中没有在NamedQuery中用到的表，例如SQL：
+           * with p as (
+           *    select id, name, age, company_id from person where age > 22
+           * ), c as (
+           *    select id, name from company
+           * )
+           * select p.id, p.name, p.age from p
+           *
+           * 虽然With中使用了p和c两个CTEs，但是后面的NamedQuery里只用到了p表，因此c表会被过滤掉，只给p表建立SubqueryAlias；转换如下：
+           *
+           * == Parsed Logical Plan ==
+           * CTE [p, c]
+           * :  :- 'SubqueryAlias p
+           * :  :  +- 'Project ['id, 'name, 'age, 'company_id]
+           * :  :     +- 'Filter ('age > 22)
+           * :  :        +- 'UnresolvedRelation `person`
+           * :  +- 'SubqueryAlias c
+           * :     +- 'Project ['id, 'name]
+           * :        +- 'UnresolvedRelation `company`
+           * +- 'Project ['p.id, 'p.name, 'p.age]
+           *    +- 'UnresolvedRelation `p`
+           *
+           * == Analyzed Logical Plan ==
+           * id: bigint, name: string, age: bigint
+           * Project [id#2L, name#3, age#0L]
+           * +- SubqueryAlias p
+           *    +- Project [id#2L, name#3, age#0L, company_id#1L]
+           *        +- Filter (age#0L > cast(22 as bigint))
+           *            +- SubqueryAlias person, `person`
+           *                +- Relation[age#0L,company_id#1L,id#2L,name#3] json
+           */
+          val substituted = cteRelations.find(x => resolver(x._1, u.tableIdentifier.table)) // 找出CTEs里与NamedQuery里相同的Relation
             .map(_._2).map { relation =>
-              val withAlias = u.alias.map(SubqueryAlias(_, relation, None))
+              val withAlias = u.alias.map(SubqueryAlias(_, relation, None)) // 转换为SubqueryAlias
               withAlias.getOrElse(relation)
             }
           substituted.getOrElse(u)
         case other =>
           // This cannot be done in ResolveSubquery because ResolveSubquery does not know the CTE.
+          /**
+           * 处理子查询，将CTEs节点的计划下推为子查询子节点计划，例如SQL：
+           * WITH p AS (
+           *    SELECT id, name, age, company_id FROM person WHERE age > 22
+           * )
+           * SELECT p.id, p.name, p.age FROM p WHERE id = (
+           *    SELECT id FROM p LIMIT 1
+           * )
+           *
+           * 由于NamedQuery中存在标量子查询，会将该标量子查询上提，将With子查询作为标量子查询的子计划；转换如下：
+           *
+           * == Parsed Logical Plan ==
+           * CTE [p]
+           * :  +- 'SubqueryAlias p
+           * :     +- 'Project ['id, 'name, 'age, 'company_id]
+           * :        +- 'Filter ('age > 22)
+           * :           +- 'UnresolvedRelation `person`
+           * +- 'Project ['p.id, 'p.name, 'p.age]
+           * +- 'Filter ('id = scalar-subquery#120 [])
+           * :  +- 'GlobalLimit 1
+           * :     +- 'LocalLimit 1
+           * :        +- 'Project ['id]
+           * :           +- 'UnresolvedRelation `p`
+           * +- 'UnresolvedRelation `p`
+           *
+           * == Analyzed Logical Plan ==
+           * id: bigint, name: string, age: bigint
+           * Project [id#2L, name#3, age#0L]
+           * +- Filter (id#2L = scalar-subquery#120 [])
+           * :  +- Project [id#2L AS id#2L#127L]
+           * :     +- GlobalLimit 1
+           * :        +- LocalLimit 1
+           * :           +- Project [id#2L]
+           * :              +- SubqueryAlias p
+           * :                 +- Project [id#2L, name#3, age#0L, company_id#1L]
+           * :                    +- Filter (age#0L > cast(22 as bigint))
+           * :                       +- SubqueryAlias person, `person`
+           * :                          +- Relation[age#0L,company_id#1L,id#2L,name#3] json
+           * +- SubqueryAlias p
+           *    +- Project [id#2L, name#3, age#0L, company_id#1L]
+           *        +- Filter (age#0L > cast(22 as bigint))
+           *            +- SubqueryAlias person, `person`
+           *                +- Relation[age#0L,company_id#1L,id#2L,name#3] json
+           */
           other transformExpressions {
             case e: SubqueryExpression =>
               e.withNewPlan(substituteCTE(e.plan, cteRelations))
@@ -625,10 +707,10 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-      case p: LogicalPlan if !p.childrenResolved => p
+      case p: LogicalPlan if !p.childrenResolved => p // 如果子节点未被解析，直接返回
 
       // If the projection list contains Stars, expand it.
-      case p: Project if containsStar(p.projectList) =>
+      case p: Project if containsStar(p.projectList) => // select *
         p.copy(projectList = buildExpandedProjectList(p.projectList, p.child))
       // If the aggregate function argument contains Stars, expand it.
       case a: Aggregate if containsStar(a.aggregateExpressions) =>

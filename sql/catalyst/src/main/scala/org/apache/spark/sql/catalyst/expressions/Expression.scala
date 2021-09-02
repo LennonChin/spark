@@ -97,7 +97,11 @@ abstract class Expression extends TreeNode[Expression] {
   // 返回值为AttributeSet类型，表示该Expression中会涉及的属性值，默认情况为所有子节点中属性值的集合。
   def references: AttributeSet = AttributeSet(children.flatMap(_.references.iterator))
 
-  /** Returns the result of evaluating this expression on a given input Row */
+  /**
+   * Returns the result of evaluating this expression on a given input Row
+   *
+   * 返回给定输入的InternalRow使用当前表达式计算后的结果
+   **/
   def eval(input: InternalRow = null): Any
 
   /**

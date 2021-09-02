@@ -92,17 +92,33 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a top-level plan with Common Table Expressions.
    */
   override def visitQuery(ctx: QueryContext): LogicalPlan = withOrigin(ctx) {
+    // 先处理CTES中With后面的语句
     val query = plan(ctx.queryNoWith)
 
     // Apply CTEs
-    query.optional(ctx.ctes) {
+    query.optional(ctx.ctes) { //  如果存在CTES
+      // 对所有的NamedQuery进行处理
       val ctes = ctx.ctes.namedQuery.asScala.map { nCtx =>
-        val namedQuery = visitNamedQuery(nCtx)
-        (namedQuery.alias, namedQuery)
+        val namedQuery = visitNamedQuery(nCtx) // 访问NameQuery子树
+        (namedQuery.alias, namedQuery) // (String, SubqueryAlias)
       }
       // Check for duplicate names.
+      /**
+       * 检查是否有重复的NamedQuery，即With语法中表达式的别名不可重复，例如：
+       * WITH TMP1 AS (
+       *    SELECT * FROM TABLE1
+       * ), TMP1 AS (
+       *    SELECT * FROM TABLE2
+       * )
+       * ...
+       * 因为存在两个TMP1，在该检查中会抛出ParseException异常
+       */
       checkDuplicateKeys(ctes, ctx)
-      With(query, ctes)
+      /**
+       * 构造With节点
+       * With语法里，表达式的查询都会当做子查询。
+       */
+      With(query, ctes) // UnaryNode，子节点是QueryNoWith产生的节点
     }
   }
 
@@ -132,23 +148,26 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * This (Hive) feature cannot be combined with set-operators.
    */
   override def visitMultiInsertQuery(ctx: MultiInsertQueryContext): LogicalPlan = withOrigin(ctx) {
-    val from = visitFromClause(ctx.fromClause)
+    val from = visitFromClause(ctx.fromClause) // 处理FromClause子树
 
     // Build the insert clauses.
-    val inserts = ctx.multiInsertQueryBody.asScala.map {
+    val inserts = ctx.multiInsertQueryBody.asScala.map { // 处理MultiInsertQueryBody子树，可能有多个
       body =>
+        // 检验合法性，MultiInsertQueryBody不能继续嵌套FromClause
         validate(body.querySpecification.fromClause == null,
           "Multi-Insert queries cannot have a FROM clause in their individual SELECT statements",
           body)
 
-        withQuerySpecification(body.querySpecification, from).
+        // 处理QuerySpecification子树
+        withQuerySpecification(body.querySpecification, from). // 处理QuerySpecification子树
           // Add organization statements.
-          optionalMap(body.queryOrganization)(withQueryResultClauses).
+          optionalMap(body.queryOrganization)(withQueryResultClauses). // 处理QueryOrganization子树
           // Add insert.
-          optionalMap(body.insertInto())(withInsertInto)
+          optionalMap(body.insertInto())(withInsertInto) // 处理InsertInto子树
     }
 
     // If there are multiple INSERTS just UNION them together into one query.
+    // 对多个Insert进行Union
     inserts match {
       case Seq(query) => query
       case queries => Union(queries)
@@ -160,11 +179,11 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitSingleInsertQuery(
       ctx: SingleInsertQueryContext): LogicalPlan = withOrigin(ctx) {
-    plan(ctx.queryTerm).
+    plan(ctx.queryTerm). // 处理QueryTerm子树
       // Add organization statements.
-      optionalMap(ctx.queryOrganization)(withQueryResultClauses).
+      optionalMap(ctx.queryOrganization)(withQueryResultClauses). // 处理QueryOrganization子树
       // Add insert.
-      optionalMap(ctx.insertInto())(withInsertInto)
+      optionalMap(ctx.insertInto())(withInsertInto) // 处理InsertInto子树
   }
 
   /**
@@ -242,26 +261,26 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     // Handle ORDER BY, SORT BY, DISTRIBUTE BY, and CLUSTER BY clause.
     val withOrder = if (
       !order.isEmpty && sort.isEmpty && distributeBy.isEmpty && clusterBy.isEmpty) {
-      // ORDER BY ...
-      Sort(order.asScala.map(visitSortItem), global = true, query)
+      // ORDER BY ...，全局有序，返回Sort节点
+      Sort(order.asScala.map(visitSortItem), global = true, query) // 全局为true，即ORDER BY是全局排序
     } else if (order.isEmpty && !sort.isEmpty && distributeBy.isEmpty && clusterBy.isEmpty) {
-      // SORT BY ...
-      Sort(sort.asScala.map(visitSortItem), global = false, query)
+      // SORT BY ...，分区内有序，返回Sort节点
+      Sort(sort.asScala.map(visitSortItem), global = false, query) // 全局为false
     } else if (order.isEmpty && sort.isEmpty && !distributeBy.isEmpty && clusterBy.isEmpty) {
-      // DISTRIBUTE BY ...
+      // DISTRIBUTE BY ...，根据列进行分区，返回RepartitionByExpression节点
       RepartitionByExpression(expressionList(distributeBy), query)
     } else if (order.isEmpty && !sort.isEmpty && !distributeBy.isEmpty && clusterBy.isEmpty) {
-      // SORT BY ... DISTRIBUTE BY ...
+      // SORT BY ... DISTRIBUTE BY ...，根据列进行分区，分区内有序，返回Sort节点
       Sort(
         sort.asScala.map(visitSortItem),
-        global = false,
+        global = false, // 全局为false
         RepartitionByExpression(expressionList(distributeBy), query))
     } else if (order.isEmpty && sort.isEmpty && distributeBy.isEmpty && !clusterBy.isEmpty) {
-      // CLUSTER BY ...
+      // CLUSTER BY ...，根据相同的列进行分区和排序，CLUSTER BY c1 == DISTRIBUTE BY c1 SORT BY c1，返回Sort节点
       val expressions = expressionList(clusterBy)
       Sort(
         expressions.map(SortOrder(_, Ascending)),
-        global = false,
+        global = false, // 全局为false
         RepartitionByExpression(expressions, query))
     } else if (order.isEmpty && sort.isEmpty && distributeBy.isEmpty && clusterBy.isEmpty) {
       // [EMPTY]
@@ -271,10 +290,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
         "Combination of ORDER BY/SORT BY/DISTRIBUTE BY/CLUSTER BY is not supported", ctx)
     }
 
-    // WINDOWS
+    // WINDOWS，处理命名窗口
     val withWindow = withOrder.optionalMap(windows)(withWindows)
 
-    // LIMIT
+    // LIMIT，处理Limit
     withWindow.optional(limit) {
       Limit(typedVisit(limit), withWindow)
     }
@@ -468,6 +487,12 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       ctx: WindowsContext,
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     // Collect all window specifications defined in the WINDOW clause.
+    /**
+     * 收集所有的命名窗口为一个Map[window_name, WindowSpec]字典
+     * WindowSpec分为WindowSpecDefinition和WindowSpecReference
+     *  - WindowSpecReference是标识符引用（可能是命名窗口的引用，也有可能是其他引用，如果是其他引用那么在下面的检查中会抛异常）
+     *  - WindowSpecDefinition则是真实的窗口定义
+     */
     val baseWindowMap = ctx.namedWindow.asScala.map {
       wCtx =>
         (wCtx.identifier.getText, typedVisit[WindowSpec](wCtx.windowSpec))
@@ -477,9 +502,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     // window w1 as (partition by p_mfgr order by p_name
     //               range between 2 preceding and 2 following),
     //        w2 as w1
-    val windowMapView = baseWindowMap.mapValues {
-      case WindowSpecReference(name) =>
-        baseWindowMap.get(name) match {
+    // 处理多个命名窗口，存在某个命名窗口是其他命名窗口的别名的情况
+    val windowMapView = baseWindowMap.mapValues { // 遍历每个命名窗口
+      case WindowSpecReference(name) => // 窗口标识符应用
+        baseWindowMap.get(name) match { // 需要找一下对应的窗口在已经解析的Map中是否存在
           case Some(spec: WindowSpecDefinition) =>
             spec
           case Some(ref) =>
@@ -487,7 +513,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
           case None =>
             throw new ParseException(s"Cannot resolve window reference '$name'", ctx)
         }
-      case spec: WindowSpecDefinition => spec
+      case spec: WindowSpecDefinition => spec // 窗口定义
     }
 
     // Note that mapValues creates a view instead of materialized map. We force materialization by
@@ -1028,22 +1054,26 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitFunctionCall(ctx: FunctionCallContext): Expression = withOrigin(ctx) {
     // Create the function call.
-    val name = ctx.qualifiedName.getText
-    val isDistinct = Option(ctx.setQuantifier()).exists(_.DISTINCT != null)
+    val name = ctx.qualifiedName.getText // 函数名
+    val isDistinct = Option(ctx.setQuantifier()).exists(_.DISTINCT != null) // 函数参数内是否存在Distinct操作
+    // 函数参数
     val arguments = ctx.expression().asScala.map(expression) match {
+      // COUNT(*) -> COUNT(1)
       case Seq(UnresolvedStar(None)) if name.toLowerCase == "count" && !isDistinct =>
         // Transform COUNT(*) into COUNT(1).
         Seq(Literal(1))
-      case expressions =>
+      case expressions => // 其他情况不处理
         expressions
     }
+    // 构造函数节点
     val function = UnresolvedFunction(visitFunctionName(ctx.qualifiedName), arguments, isDistinct)
 
     // Check if the function is evaluated in a windowed context.
+    // 查看函数是否是作用在窗口上
     ctx.windowSpec match {
-      case spec: WindowRefContext =>
+      case spec: WindowRefContext => // 作用在窗口引用上
         UnresolvedWindowExpression(function, visitWindowRef(spec))
-      case spec: WindowDefContext =>
+      case spec: WindowDefContext => // 作用在窗口定义上
         WindowExpression(function, visitWindowDef(spec))
       case _ => function
     }
@@ -1052,6 +1082,10 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
   /**
    * Create a current timestamp/date expression. These are different from regular function because
    * they do not require the user to specify braces when calling them.
+   *
+   * 解析当前日期和当前时间的表达式，如：
+   * select current_date from ...
+   * select current_timestamp from ...
    */
   override def visitTimeFunctionCall(ctx: TimeFunctionCallContext): Expression = withOrigin(ctx) {
     ctx.name.getType match {
@@ -1067,16 +1101,19 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   protected def visitFunctionName(ctx: QualifiedNameContext): FunctionIdentifier = {
     ctx.identifier().asScala.map(_.getText) match {
-      case Seq(db, fn) => FunctionIdentifier(fn, Option(db))
-      case Seq(fn) => FunctionIdentifier(fn, None)
+      case Seq(db, fn) => FunctionIdentifier(fn, Option(db)) // 携带schema名称，eg. select default.function_name(column_a) from ...
+      case Seq(fn) => FunctionIdentifier(fn, None) // 未携带schema名称，eg. select function_name(column_a) from ...
       case other => throw new ParseException(s"Unsupported function name '${ctx.getText}'", ctx)
     }
   }
 
   /**
    * Create a reference to a window frame, i.e. [[WindowSpecReference]].
+   *
+   * 创建窗口引用
    */
   override def visitWindowRef(ctx: WindowRefContext): WindowSpecReference = withOrigin(ctx) {
+    // 直接返回构建的WindowSpecReference节点
     WindowSpecReference(ctx.identifier.getText)
   }
 
@@ -1085,22 +1122,25 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitWindowDef(ctx: WindowDefContext): WindowSpecDefinition = withOrigin(ctx) {
     // CLUSTER BY ... | PARTITION BY ... ORDER BY ...
-    val partition = ctx.partition.asScala.map(expression)
-    val order = ctx.sortItem.asScala.map(visitSortItem)
+    val partition = ctx.partition.asScala.map(expression) // 分区列
+    val order = ctx.sortItem.asScala.map(visitSortItem) // 排序列
 
     // RANGE/ROWS BETWEEN ...
+    // 处理Window Frame
     val frameSpecOption = Option(ctx.windowFrame).map { frame =>
       val frameType = frame.frameType.getType match {
-        case SqlBaseParser.RANGE => RangeFrame
-        case SqlBaseParser.ROWS => RowFrame
+        case SqlBaseParser.RANGE => RangeFrame // RANGE BETWEEN ...
+        case SqlBaseParser.ROWS => RowFrame// ROW BETWEEN ...
       }
 
+      // 构造SpecifiedWindowFrame对象
       SpecifiedWindowFrame(
         frameType,
         visitFrameBound(frame.start),
         Option(frame.end).map(visitFrameBound).getOrElse(CurrentRow))
     }
 
+    // 构造WindowSpecDefinition对象，注意Window Frame，如果指定了就是SpecifiedWindowFrame，没有指定则是UnspecifiedFrame
     WindowSpecDefinition(
       partition,
       order,
@@ -1233,11 +1273,13 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create a [[SortOrder]] expression.
    */
   override def visitSortItem(ctx: SortItemContext): SortOrder = withOrigin(ctx) {
+    // 排序顺序
     val direction = if (ctx.DESC != null) {
       Descending
     } else {
       Ascending
     }
+    // Null值处置
     val nullOrdering = if (ctx.FIRST != null) {
       NullsFirst
     } else if (ctx.LAST != null) {
@@ -1245,6 +1287,8 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     } else {
       direction.defaultNullOrdering
     }
+
+    // 构造SortOrder表达式
     SortOrder(expression(ctx.expression), direction, nullOrdering)
   }
 

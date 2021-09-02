@@ -18,12 +18,11 @@
 package org.apache.spark.sql.catalyst.rules
 
 import scala.collection.JavaConverters._
-
 import com.google.common.util.concurrent.AtomicLongMap
-
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.errors.TreeNodeException
 import org.apache.spark.sql.catalyst.trees.TreeNode
+import org.apache.spark.sql.catalyst.util.debugger.PlanTreeTraversal
 import org.apache.spark.sql.catalyst.util.sideBySide
 import org.apache.spark.util.Utils
 
@@ -88,6 +87,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
    */
   def execute(plan: TreeType): TreeType = {
     var curPlan = plan
+    PlanTreeTraversal.addTree(curPlan.nestedJsonValue, this.logName)
 
     /**
      * Substitution(100) -> Resolution(100) -> Nondeterministic(1) -> UDF(1) -> FixNullability(1) -> Cleanup(100)
@@ -128,6 +128,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
                   |=== Applying Rule ${rule.ruleName} ===
                   |${sideBySide(plan.treeString, result.treeString).mkString("\n")}
                 """.stripMargin)
+              PlanTreeTraversal.addTreeByRule(rule.ruleName, plan.nestedJsonValue, this.logName)
             }
 
             result
@@ -166,6 +167,7 @@ abstract class RuleExecutor[TreeType <: TreeNode[_]] extends Logging {
           |=== Result of Batch ${batch.name} ===
           |${sideBySide(plan.treeString, curPlan.treeString).mkString("\n")}
         """.stripMargin)
+        PlanTreeTraversal.addTreeByBatchRule(batch.name, curPlan.nestedJsonValue, this.logName)
       } else {
         logTrace(s"Batch ${batch.name} has no effect.")
       }

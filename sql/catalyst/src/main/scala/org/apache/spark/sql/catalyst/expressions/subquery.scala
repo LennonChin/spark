@@ -39,6 +39,10 @@ abstract class PlanExpression[T <: QueryPlan[_]] extends Expression {
 
 /**
  * A base interface for expressions that contain a [[LogicalPlan]].
+ * 1. Exists: Exists (sub query)
+ * 2. ListQuery: In (sub query)
+ * 3. PredicateSubquery: WHERE or a HAVING predicate sub query, eg. where a == (sub query), having a op (sub query)
+ * 4. ScalarSubquery: Scalar sub query
  */
 abstract class SubqueryExpression extends PlanExpression[LogicalPlan] {
   override def withNewPlan(plan: LogicalPlan): SubqueryExpression

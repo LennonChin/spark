@@ -41,7 +41,7 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   protected def getRelevantConstraints(constraints: Set[Expression]): Set[Expression] = {
     constraints
       .union(inferAdditionalConstraints(constraints))
-      .union(constructIsNotNullConstraints(constraints))
+      .union(constructIsNotNullConstraints(constraints)) // 添加某些字段的Not Null约束
       .filter(constraint =>
         constraint.references.nonEmpty && constraint.references.subsetOf(outputSet) &&
           constraint.deterministic)
@@ -67,25 +67,31 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   /**
    * Infer the Attribute-specific IsNotNull constraints from the null intolerant child expressions
    * of constraints.
+   *
+   * 推断IsNotNull的约束
    */
   private def inferIsNotNullConstraints(constraint: Expression): Seq[Expression] =
     constraint match {
       // When the root is IsNotNull, we can push IsNotNull through the child null intolerant
       // expressions
+      // 如果根就是IsNotNull，则推断它的表达式以及子表达式
       case IsNotNull(expr) => scanNullIntolerantAttribute(expr).map(IsNotNull(_))
       // Constraints always return true for all the inputs. That means, null will never be returned.
       // Thus, we can infer `IsNotNull(constraint)`, and also push IsNotNull through the child
       // null intolerant expressions.
+      // 否则直接从根开始推断
       case _ => scanNullIntolerantAttribute(constraint).map(IsNotNull(_))
     }
 
   /**
    * Recursively explores the expressions which are null intolerant and returns all attributes
    * in these expressions.
+   *
+   * 递归排查表达式，并且找出需要保证不为Null的列属性，返回这些表达式中所有的属性。
    */
   private def scanNullIntolerantAttribute(expr: Expression): Seq[Attribute] = expr match {
-    case a: Attribute => Seq(a)
-    case _: NullIntolerant => expr.children.flatMap(scanNullIntolerantAttribute)
+    case a: Attribute => Seq(a) // 如果是Attribute，直接返回
+    case _: NullIntolerant => expr.children.flatMap(scanNullIntolerantAttribute) // 排查子节点
     case _ => Seq.empty[Attribute]
   }
 
@@ -106,13 +112,16 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    *
    * [SPARK-17733] We explicitly prevent producing recursive constraints of the form `a = f(a, b)`
    * as they are often useless and can lead to a non-converging set of constraints.
+   *
+   * 从一组给定的等式约束中推断出一组额外的约束。
+   * 例如，如果一个操作有一组约束（a = 5，a = b），那么需要返回附加的约束 b = 5。
    */
   private def inferAdditionalConstraints(constraints: Set[Expression]): Set[Expression] = {
     val constraintClasses = generateEquivalentConstraintClasses(constraints)
 
     var inferredConstraints = Set.empty[Expression]
     constraints.foreach {
-      case eq @ EqualTo(l: Attribute, r: Attribute) =>
+      case eq @ EqualTo(l: Attribute, r: Attribute) => // 提取 = 左右的属性
         val candidateConstraints = constraints - eq
         inferredConstraints ++= candidateConstraints.map(_ transform {
           case a: Attribute if a.semanticEquals(l) &&
@@ -195,6 +204,9 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * An [[ExpressionSet]] that contains invariants about the rows output by this operator. For
    * example, if this set contains the expression `a = 2` then that expression is guaranteed to
    * evaluate to `true` for all rows produced.
+   *
+   * ExpressionSet包含了当前算子操作输出行的不变量。
+   * 例如：如果这个集合包含表达式 a = 2，那么对于生成的所有行，该表达式保证计算为true。
    */
   lazy val constraints: ExpressionSet = ExpressionSet(getRelevantConstraints(validConstraints))
 
@@ -252,6 +264,10 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    * Users should not expect a specific directionality. If a specific directionality is needed,
    * transformExpressionsDown or transformExpressionsUp should be used.
    *
+   * 用户不应对此方法要求特定的遍历方向性。
+   * 如果需要特定的遍历方向性，则应使用transformExpressionsDown或transformExpressionsUp。
+   * 该方法默认是自顶向下进行遍历，即先序遍历。
+   *
    * @param rule the rule to be applied to every expression in this operator.
    */
   def transformExpressions(rule: PartialFunction[Expression, Expression]): this.type = {
@@ -261,13 +277,15 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   /**
    * Runs [[transformDown]] with `rule` on all expressions present in this query operator.
    *
+   * 自顶向下对该操作中的所有表达式进行规则应用。
+   *
    * @param rule the rule to be applied to every expression in this operator.
    */
   def transformExpressionsDown(rule: PartialFunction[Expression, Expression]): this.type = {
     var changed = false
 
     @inline def transformExpressionDown(e: Expression): Expression = {
-      val newE = e.transformDown(rule)
+      val newE = e.transformDown(rule) // 自顶向下运用规则
       if (newE.fastEquals(e)) {
         e
       } else {
@@ -277,15 +295,20 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
     }
 
     def recursiveTransform(arg: Any): AnyRef = arg match {
-      case e: Expression => transformExpressionDown(e)
-      case Some(e: Expression) => Some(transformExpressionDown(e))
+      case e: Expression => transformExpressionDown(e) // 表达式，直接调用transformExpressionDown
+      case Some(e: Expression) => Some(transformExpressionDown(e)) // 表达式，直接调用transformExpressionDown
       case m: Map[_, _] => m
       case d: DataType => d // Avoid unpacking Structs
-      case seq: Traversable[_] => seq.map(recursiveTransform)
+      case seq: Traversable[_] => seq.map(recursiveTransform) // 递归集合内的每个元素
       case other: AnyRef => other
       case null => null
     }
 
+    /**
+     * 对所有节点进行transformDown操作。
+     * 此处的mapProductIterator会对当前QueryPlan实例的构造参数进行遍历，
+     * 传递给recursiveTransform进行模式匹配并做相应的操作。
+     */
     val newArgs = mapProductIterator(recursiveTransform)
 
     if (changed) makeCopy(newArgs).asInstanceOf[this.type] else this
@@ -293,6 +316,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
 
   /**
    * Runs [[transformUp]] with `rule` on all expressions present in this query operator.
+   *
+   * 自底向上对该操作中的所有表达式进行规则应用。
    *
    * @param rule the rule to be applied to every expression in this operator.
    * @return
@@ -329,6 +354,8 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
   /**
    * Returns the result of running [[transformExpressions]] on this node
    * and all its children.
+   *
+   * 返回对本节点及其所有子节点调用transformExpressions方法应用规则后的结果。
    */
   def transformAllExpressions(rule: PartialFunction[Expression, Expression]): this.type = {
     transform {
@@ -373,7 +400,9 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
    *
    * We use "!" to indicate an invalid plan, and "'" to indicate an unresolved plan.
    *
-   * 在QueryPlan的默认实现中，如果该计划不可用（invalid），则前缀会用感叹号（“！”）标记。
+   * 在QueryPlan的默认实现中：
+   * - 如果该计划不可用（invalid），则前缀会用感叹号（“！”）标记。
+   * - 如果该计划未解析（unresolved），则前缀会用单引号（“'”）标记。
    */
   protected def statePrefix = if (missingInput.nonEmpty && children.nonEmpty) "!" else ""
 
@@ -453,11 +482,12 @@ abstract class QueryPlan[PlanType <: QueryPlan[PlanType]] extends TreeNode[PlanT
       case other => other
     }
 
+    // 对所有构造参数进行map操作
     mapProductIterator {
-      case s: Option[_] => s.map(cleanArg)
-      case s: Seq[_] => s.map(cleanArg)
-      case m: Map[_, _] => m.mapValues(cleanArg)
-      case other => cleanArg(other)
+      case s: Option[_] => s.map(cleanArg) // 直接clean
+      case s: Seq[_] => s.map(cleanArg) // 对每个元素clean
+      case m: Map[_, _] => m.mapValues(cleanArg) // 对每个键值对的值clean
+      case other => cleanArg(other) // 直接clean
     }.toSeq
   }
 }

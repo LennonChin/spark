@@ -59,6 +59,7 @@ class JoinedRow extends InternalRow {
     this
   }
 
+  // 左右Row的字段会合并为一个Seq[Any]，先放左边Row的字段，再放右边Row的字段
   override def toSeq(fieldTypes: Seq[DataType]): Seq[Any] = {
     assert(fieldTypes.length == row1.numFields + row2.numFields)
     val (left, right) = fieldTypes.splitAt(row1.numFields)
