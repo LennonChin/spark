@@ -287,14 +287,66 @@ class Analyzer(
   object WindowsSubstitution extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       // Lookup WindowSpecDefinitions. This rule works with unresolved children.
+      /**
+       * 解析命名口函数节点的子节点中未解析的表达式。
+       * WithWindowDefinition节点的处理时机是在Limit之前，非常靠后，
+       * 因此该节点在被构造时，前面从QuerySpecification和QueryOrganization语法解析构造出来的子节点会作为WithWindowDefinition的子节点，
+       * 因此在该处理的替换中，会递归向下处理所有之前构造的子节点，对它们的表达式引用进行解析，
+       * 主要是检查这些节点中引用的命名窗口是否存在于WithWindowDefinition的definition中。
+       * 例如，在下面的SQL中：
+       * SELECT RANK() OVER fake_named_window_reference AS rank FROM t WINDOW named_window AS (...)
+       * 由于SELECT和FROM之间使用到了命名窗口函数fake_named_window_reference，
+       * 因此需要检查fake_named_window_reference是否在FROM后面进行了定义，
+       * 而在该SQL中由于FROM后面的命名窗口函数名称为named_window，因此在前面使用fake_named_window_reference引用命名窗口会报错，
+       * 这条规则就是在处理这种引用出错的情况，会抛出AnalysisException异常
+       */
       case WithWindowDefinition(windowDefinitions, child) =>
         child.transform {
           case p => p.transformExpressions {
+            /**
+             * 当窗口函数作用在命名窗口引用上，才会构造UnresolvedWindowExpression表达式，
+             * 窗口函数直接作用在窗口定义上，构造的是WindowExpression表达式。
+             *
+             * 因此只有在遇到UnresolvedWindowExpression表达式时才需要对其进行验证和转换。例如SQL：
+             *
+             * SELECT
+             *    name, age, country,
+             *    RANK() OVER named_window AS rank
+             * FROM person
+             * WINDOW named_window AS (PARTITION BY country ORDER BY age)
+             *
+             * == Parsed Logical Plan ==
+             * 'WithWindowDefinition Map(named_window -> windowspecdefinition('country, 'age ASC NULLS FIRST, UnspecifiedFrame))
+             * +- 'Project ['name, 'age, 'country, unresolvedwindowexpression('RANK(), WindowSpecReference(named_window)) AS rank#26]
+             *    +- 'UnresolvedRelation `person`
+             *
+             * == Analyzed Logical Plan ==
+             * name: string, age: bigint, country: string, rank: int
+             * Project [name#4, age#0L, country#2, rank#26]
+             * +- Project [name#4, age#0L, country#2, rank#26, rank#26]
+             *    +- Window [rank(age#0L) windowspecdefinition(country#2, age#0L ASC NULLS FIRST, ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW) AS rank#26], [country#2], [age#0L ASC NULLS FIRST]
+             *        +- Project [name#4, age#0L, country#2]
+             *            +- SubqueryAlias person, `person`
+             *                +- Relation[age#0L,company_id#1L,country#2,id#3L,name#4] json
+             *
+             * 其中Unresolved LogicalPlan里WithWindowDefinition下的Project里的unresolvedwindowexpression会被匹配并检查和解析，
+             * 并经过其他的规则处理后，最终转换为Window子节点。而SQL：
+             *
+             * SELECT
+             *    name, age, country,
+             *    RANK() OVER fake_named_window_reference AS rank
+             * FROM person
+             * WINDOW named_window AS (PARTITION BY country ORDER BY age)
+             *
+             * 会抛出AnalysisException: Window specification fake_named_window_reference is not defined in the WINDOW clause.异常。
+             */
             case UnresolvedWindowExpression(c, WindowSpecReference(windowName)) =>
               val errorMessage =
                 s"Window specification $windowName is not defined in the WINDOW clause."
+              // 从已知的窗口定义根据窗口名进行查找，找不到就报错
               val windowSpecDefinition =
                 windowDefinitions.getOrElse(windowName, failAnalysis(errorMessage))
+              // 构造为WindowExpression进行返回
               WindowExpression(c, windowSpecDefinition)
           }
         }
@@ -402,7 +454,7 @@ class Analyzer(
         groupByExprs: Seq[Expression],
         gid: Expression): Expression = {
       expr transform {
-        case e: GroupingID =>
+        case e: GroupingID => // grouping_id函数
           if (e.groupByExprs.isEmpty || e.groupByExprs == groupByExprs) {
             gid
           } else {
@@ -425,25 +477,32 @@ class Analyzer(
     // This require transformUp to replace grouping()/grouping_id() in resolved Filter/Sort
     def apply(plan: LogicalPlan): LogicalPlan = plan transformUp {
       case a if !a.childrenResolved => a // be sure all of the children are resolved.
-      case p if p.expressions.exists(hasGroupingAttribute) =>
+      case p if p.expressions.exists(hasGroupingAttribute) => // grouping__id函数不支持，需使用grouping_id函数
         failAnalysis(
           s"${VirtualColumn.hiveGroupingIdName} is deprecated; use grouping_id() instead")
 
-      // 对于Cube和Rollup类型的Aggregate算子节点，生成GroupingSets节点
+      /**
+       * 对于Cube和Rollup类型的Aggregate算子节点，生成GroupingSets节点，
+       * 主要是解决标记掩码的解析，生成的GroupingSets节点会在下一轮的ResolveGroupingAnalytics规则里被其它case处理
+       */
       case Aggregate(Seq(c @ Cube(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(c), groupByExprs, child, aggregateExpressions)
       case Aggregate(Seq(r @ Rollup(groupByExprs)), aggregateExpressions, child) =>
         GroupingSets(bitmasks(r), groupByExprs, child, aggregateExpressions)
 
       // Ensure all the expressions have been resolved.
-      // 生成Expand逻辑算子节点加上Aggregate节点
-      case x: GroupingSets if x.expressions.forall(_.resolved) =>
-        val gid = AttributeReference(VirtualColumn.groupingIdName, IntegerType, false)()
+      // 对于GroupingSets节点，生成Expand逻辑算子节点加上Aggregate节点
+      case x: GroupingSets if x.expressions.forall(_.resolved) => // 需要检查GroupingSets的表达式是否都已经被解析过
+        val gid = AttributeReference(VirtualColumn.groupingIdName, IntegerType, false)() // 生成spark_grouping_id列引用
 
         // Expand works by setting grouping expressions to null as determined by the bitmasks. To
         // prevent these null values from being used in an aggregate instead of the original value
         // we need to create new aliases for all group by expressions that will only be used for
         // the intended purpose.
+        /**
+         * Expand 的工作原理是将分组表达式设置为空值（由位掩码确定）。
+         * 为了防止在聚合中使用到些空值而不是原始值，我们需要为所有仅用于预期目的的 group by 表达式创建新别名。
+         */
         val groupByAliases: Seq[Alias] = x.groupByExprs.map {
           case e: NamedExpression => Alias(e, e.name)()
           case other => Alias(other, other.toString)()
@@ -453,6 +512,10 @@ class Analyzer(
         // with 0 indicating this expression is in the grouping set. The following line of code
         // calculates the bitmask representing the expressions that absent in at least one grouping
         // set (indicated by 1).
+        /**
+         * 位掩码中最右边的位对应于 groupByAliases 中的最后一个表达式，0 表示该表达式在分组集中。
+         * 以下代码行计算表示在至少一个分组集（由 1 表示）中不存在的表达式的位掩码。
+         */
         val nullBitmask = x.bitmasks.reduce(_ | _)
 
         val attrLength = groupByAliases.length
@@ -460,10 +523,15 @@ class Analyzer(
           a.toAttribute.withNullability(((nullBitmask >> (attrLength - idx - 1)) & 1) == 1)
         }
 
-        // Expand节点
+        /**
+         * 构造为Expand节点
+         */
         val expand = Expand(x.bitmasks, groupByAliases, expandedAttributes, gid, x.child)
         val groupingAttrs = expand.output.drop(x.child.output.length)
 
+        /**
+         * 处理所有的select列，也即是聚合列
+         */
         val aggregations: Seq[NamedExpression] = x.aggregations.map { case expr =>
           // collect all the found AggregateExpression, so we can check an expression is part of
           // any AggregateExpression or not.
@@ -490,7 +558,7 @@ class Analyzer(
           }.asInstanceOf[NamedExpression]
         }
 
-        // Aggregate节点
+        // Aggregate节点，Expand是它的子节点
         Aggregate(groupingAttrs, aggregations, expand)
 
       case f @ Filter(cond, child) if hasGroupingFunction(cond) =>
@@ -607,7 +675,7 @@ class Analyzer(
   object ResolveRelations extends Rule[LogicalPlan] {
     private def lookupTableFromCatalog(u: UnresolvedRelation): LogicalPlan = {
       try {
-        // SubqueryAlais
+        // 使用Catalog进行查询，返回SubqueryAlais
         catalog.lookupRelation(u.tableIdentifier, u.alias)
       } catch {
         case _: NoSuchTableException =>
@@ -616,12 +684,23 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+      // 对于InsertIntoTable，先使用lookupTableFromCatalog方法解析UnresolvedRelation，再使用EliminateSubqueryAliases消除子查询别名
       case i @ InsertIntoTable(u: UnresolvedRelation, parts, child, _, _) if child.resolved =>
         i.copy(table = EliminateSubqueryAliases(lookupTableFromCatalog(u)))
+      // 对于UnresolvedRelation的处理
       case u: UnresolvedRelation =>
+        // 获取表名
         val table = u.tableIdentifier
         if (table.database.isDefined && conf.runSQLonFile && !catalog.isTemporaryTable(table) &&
             (!catalog.databaseExists(table.database.get) || !catalog.tableExists(table))) {
+          /**
+           * 1. 库名指定了。
+           * 2. spark.sql.runSQLOnFiles参数为true。
+           * 3. 不是临时表。
+           * 4. 库不存在或表不存在。
+           *
+           * 满足上面四个条件直接返回，这种情况可能是在进行“select * from parquet.`/path/to/query`”这种查询。
+           */
           // If the database part is specified, and we support running SQL directly on files, and
           // it's not a temporary view, and the table does not exist, then let's just return the
           // original UnresolvedRelation. It is possible we are matching a query like "select *
@@ -630,6 +709,7 @@ class Analyzer(
           // an exception from tableExists if the database does not exist.
           u
         } else {
+          // 其他情况使用lookupTableFromCatalog方法查询
           lookupTableFromCatalog(u)
         }
     }
@@ -646,9 +726,11 @@ class Analyzer(
      *
      * 将右子节点对应的Expression用一个新的Expression ID表示，
      * 这样即使出现同名，经过处理之后Expression ID也不相同，因此可以区分Join操作中不同的数据表。
+     *
+     * 这个方法只会在处理Join、Expect、Intersect等节点时才会被使用到，要求传入left和right两个计划。
      */
     private def dedupRight (left: LogicalPlan, right: LogicalPlan): LogicalPlan = {
-      // 获取冲突的列
+      // 获取冲突的列，即left输出列和right输出列的交集
       val conflictingAttributes = left.outputSet.intersect(right.outputSet)
       logDebug(s"Conflicting attributes ${conflictingAttributes.mkString(",")} " +
         s"between $left and $right")
@@ -685,7 +767,7 @@ class Analyzer(
       }
         // Only handle first case, others will be fixed on the next pass.
         .headOption match {
-        case None =>
+        case None => // 说明上面的匹配未匹配上，直接返回right即可。
           /*
            * No result implies that there is a logical plan node that produces new references
            * that this rule cannot handle. When that is the case, there must be another rule
@@ -693,12 +775,13 @@ class Analyzer(
            */
           right
         case Some((oldRelation, newRelation)) =>
+          // 进行列重写，先将旧的列输出和新的列输出进行zip
           val attributeRewrites = AttributeMap(oldRelation.output.zip(newRelation.output))
-          val newRight = right transformUp {
-            case r if r == oldRelation => newRelation
-          } transformUp {
-            case other => other transformExpressions {
-              case a: Attribute =>
+          val newRight = right transformUp { // 对right进行后序遍历，自底向上遍历节点
+            case r if r == oldRelation => newRelation // 将旧的Relation替换为新的Relation
+          } transformUp { // 继续自底向上遍历每个节点
+            case other => other transformExpressions { // 遍历每个节点的表达式
+              case a: Attribute => // 遇到Attribute就进行Attribute重写
                 attributeRewrites.get(a).getOrElse(a).withQualifier(a.qualifier)
             }
           }
@@ -710,17 +793,21 @@ class Analyzer(
       case p: LogicalPlan if !p.childrenResolved => p // 如果子节点未被解析，直接返回
 
       // If the projection list contains Stars, expand it.
-      case p: Project if containsStar(p.projectList) => // select *
+      case p: Project if containsStar(p.projectList) => // 解析select *
+        // 根据子节点来展开*为具体的Attribute列表
         p.copy(projectList = buildExpandedProjectList(p.projectList, p.child))
       // If the aggregate function argument contains Stars, expand it.
-      case a: Aggregate if containsStar(a.aggregateExpressions) =>
+      case a: Aggregate if containsStar(a.aggregateExpressions) => // 解析聚合，聚合表达式里有*
         if (a.groupingExpressions.exists(_.isInstanceOf[UnresolvedOrdinal])) {
+          // 如果Group By还使用了下标的方式，那么*是不允许出现在Group By中的，抛AnalysisException异常
           failAnalysis(
             "Star (*) is not allowed in select list when GROUP BY ordinal position is used")
         } else {
+          // 其他情况则可行，此时会根据子节点来展开*为具体的Attribute列表
           a.copy(aggregateExpressions = buildExpandedProjectList(a.aggregateExpressions, a.child))
         }
       // If the script transformation input contains Stars, expand it.
+      // MAP/REDUCE/TRANSFORMATION Using script的情况，此时输入到脚本内的参数是*，需要展开为具体的列
       case t: ScriptTransformation if containsStar(t.input) =>
         t.copy(
           input = t.input.flatMap {
@@ -728,20 +815,22 @@ class Analyzer(
             case o => o :: Nil
           }
         )
+      // Lateral View侧写的函数的参数中存在*，直接抛AnalysisException
       case g: Generate if containsStar(g.generator.children) =>
         failAnalysis("Invalid usage of '*' in explode/json_tuple/UDTF")
 
       // To resolve duplicate expression IDs for Join and Intersect
       case j @ Join(left, right, _, _) if !j.duplicateResolved =>
-        j.copy(right = dedupRight(left, right))
+        j.copy(right = dedupRight(left, right)) // 替换right relation中别名
       case i @ Intersect(left, right) if !i.duplicateResolved =>
-        i.copy(right = dedupRight(left, right))
+        i.copy(right = dedupRight(left, right)) // 替换right relation中别名
       case i @ Except(left, right) if !i.duplicateResolved =>
-        i.copy(right = dedupRight(left, right))
+        i.copy(right = dedupRight(left, right)) // 替换right relation中别名
 
       // When resolve `SortOrder`s in Sort based on child, don't report errors as
       // we still have chance to resolve it based on its descendants
       case s @ Sort(ordering, global, child) if child.resolved && !s.resolved =>
+        // 解析Sort By的列并以解析后的列构造新的Sort节点
         val newOrdering =
           ordering.map(order => resolveExpression(order, child).asInstanceOf[SortOrder])
         Sort(newOrdering, global, child)
@@ -751,6 +840,7 @@ class Analyzer(
       case g @ Generate(generator, _, _, _, _, _) if generator.resolved => g
 
       case g @ Generate(generator, join, outer, qualifier, output, child) =>
+        // 解析Generate中表达式，Generate是Lateral View生成的节点
         val newG = resolveExpression(generator, child, throws = true)
         if (newG.fastEquals(generator)) {
           g
@@ -797,10 +887,10 @@ class Analyzer(
       child: LogicalPlan): Seq[NamedExpression] = {
       exprs.flatMap {
         // Using Dataframe/Dataset API: testData2.groupBy($"a", $"b").agg($"*")
-        case s: Star => s.expand(child, resolver)
+        case s: Star => s.expand(child, resolver) // ResolvedStar or UnresolvedStar
         // Using SQL API without running ResolveAlias: SELECT * FROM testData2 group by a, b
-        case UnresolvedAlias(s: Star, _) => s.expand(child, resolver)
-        case o if containsStar(o :: Nil) => expandStarExpression(o, child) :: Nil
+        case UnresolvedAlias(s: Star, _) => s.expand(child, resolver) // UnresolvedStar的子节点也是Star，先使用expand方法展开子节点，需要去child中找
+        case o if containsStar(o :: Nil) => expandStarExpression(o, child) :: Nil // Expression中有*，使用expandStarExpression展开
         case o => o :: Nil
       }.map(_.asInstanceOf[NamedExpression])
     }
@@ -813,11 +903,18 @@ class Analyzer(
 
     /**
      * Expands the matching attribute.*'s in `child`'s output.
+     *
+     * 该方法会对Expression进行后序遍历，匹配遍历到的节点，递归进行展开。
+     *
+     * @param expr 需要展开*的表达式
+     * @param child 查找展开列的子计划节点
+     * @return
      */
     def expandStarExpression(expr: Expression, child: LogicalPlan): Expression = {
-      expr.transformUp {
+      expr.transformUp { // 后序遍历
+        // 函数，且函数参数存在*
         case f1: UnresolvedFunction if containsStar(f1.children) =>
-          f1.copy(children = f1.children.flatMap {
+          f1.copy(children = f1.children.flatMap { // 递归处理函数参数中的*
             case s: Star => s.expand(child, resolver)
             case o => o :: Nil
           })
@@ -858,10 +955,10 @@ class Analyzer(
     // Else, throw exception.
     try {
       expr transformUp {
-        case GetColumnByOrdinal(ordinal, _) => plan.output(ordinal)
+        case GetColumnByOrdinal(ordinal, _) => plan.output(ordinal) // Group by index, or Order by index
         case u @ UnresolvedAttribute(nameParts) =>
           withPosition(u) { plan.resolve(nameParts, resolver).getOrElse(u) }
-        case UnresolvedExtractValue(child, fieldName) if child.resolved =>
+        case UnresolvedExtractValue(child, fieldName) if child.resolved => // arr[0]、map['key']、struct['name']、table.column
           ExtractValue(child, fieldName, resolver)
       }
     } catch {
@@ -2214,11 +2311,12 @@ class Analyzer(
    */
   object ResolveDeserializer extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-      case p if !p.childrenResolved => p
-      case p if p.resolved => p
+      case p if !p.childrenResolved => p // 子节点还未解析，直接返回
+      case p if p.resolved => p // 已经解析过，直接返回
 
-      case p => p transformExpressions {
+      case p => p transformExpressions { // 遍历所有表达式
         case UnresolvedDeserializer(deserializer, inputAttributes) =>
+          // 处理输入列，如果输入列为空，取子节点所有的输出列
           val inputs = if (inputAttributes.isEmpty) {
             p.children.flatMap(_.output)
           } else {
@@ -2287,10 +2385,10 @@ class Analyzer(
    */
   object ResolveNewInstance extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-      case p if !p.childrenResolved => p
-      case p if p.resolved => p
+      case p if !p.childrenResolved => p // 子节点还未解析，直接返回
+      case p if p.resolved => p // 已经解析过，直接返回
 
-      case p => p transformExpressions {
+      case p => p transformExpressions { // 遍历所有表达式
         case n: NewInstance if n.childrenResolved && !n.resolved =>
           val outer = OuterScopes.getOuterScope(n.cls)
           if (outer == null) {
@@ -2308,6 +2406,7 @@ class Analyzer(
    * Replace the [[UpCast]] expression by [[Cast]], and throw exceptions if the cast may truncate.
    */
   object ResolveUpCast extends Rule[LogicalPlan] {
+    // 抛异常的方法
     private def fail(from: Expression, to: DataType, walkedTypePath: Seq[String]) = {
       throw new AnalysisException(s"Cannot up cast ${from.sql} from " +
         s"${from.dataType.simpleString} to ${to.simpleString} as it may truncate\n" +
@@ -2316,6 +2415,20 @@ class Analyzer(
         "type of the field in the target object")
     }
 
+    /**
+     * 该方法用于检查Numeric数字的转换。
+     * 在TypeCoercion.numericPrecedence中定义了Numeric的优先级Seq，相应的：
+     *  - ByteType：索引为0
+     *  - ShortType：索引为1
+     *  - IntegerType：索引为2
+     *  - LongType：索引为3
+     *  - FloatType：索引为4
+     *  - DoubleType：索引为5
+     *
+     * toPrecedence > 0，说明转换操作目标是Numeric类型的值
+     * 但是如果此时fromPrecedence > toPrecedence，说明出现了字宽较大的Numeric向字宽较小的Numeric转换
+     * 这是不允许的。
+     */
     private def illegalNumericPrecedence(from: DataType, to: DataType): Boolean = {
       val fromPrecedence = TypeCoercion.numericPrecedence.indexOf(from)
       val toPrecedence = TypeCoercion.numericPrecedence.indexOf(to)
@@ -2323,22 +2436,23 @@ class Analyzer(
     }
 
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
-      case p if !p.childrenResolved => p
-      case p if p.resolved => p
+      case p if !p.childrenResolved => p // 子节点未解析，放弃处理，直接返回
+      case p if p.resolved => p // 已经解析过，直接返回
 
-      case p => p transformExpressions {
-        case u @ UpCast(child, _, _) if !child.resolved => u
+      case p => p transformExpressions { // 递归所有表达式
+        case u @ UpCast(child, _, _) if !child.resolved => u // 子节点未解析，放弃处理，直接返回
 
         case UpCast(child, dataType, walkedTypePath) => (child.dataType, dataType) match {
           case (from: NumericType, to: DecimalType) if !to.isWiderThan(from) =>
-            fail(child, to, walkedTypePath)
+            fail(child, to, walkedTypePath) // DecimalType的范围比NumericType宽，解析失败
           case (from: DecimalType, to: NumericType) if !from.isTighterThan(to) =>
+            fail(child, to, walkedTypePath) // DecimalType的范围比NumericType宽，解析失败
+          case (from, to) if illegalNumericPrecedence(from, to) => // 从大字宽Numeric转换为小字宽Numeric，例如Int -> Short、Long -> Int是不允许的
+            // 解析失败
             fail(child, to, walkedTypePath)
-          case (from, to) if illegalNumericPrecedence(from, to) =>
-            fail(child, to, walkedTypePath)
-          case (TimestampType, DateType) =>
+          case (TimestampType, DateType) => // 不可从TimestampType转为DateType
             fail(child, DateType, walkedTypePath)
-          case (StringType, to: NumericType) =>
+          case (StringType, to: NumericType) => // 不可从StringType转为NumericType
             fail(child, to, walkedTypePath)
           case _ => Cast(child, dataType.asNullable)
         }
@@ -2362,6 +2476,7 @@ object EliminateSubqueryAliases extends Rule[LogicalPlan] {
  */
 object EliminateUnions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // 先序遍历子节点，如果发现Union的子节点数量为1，直接将Union节点简化为Union的该子节点
     case Union(children) if children.size == 1 => children.head
   }
 }
@@ -2514,7 +2629,8 @@ object TimeWindowing extends Rule[LogicalPlan] {
 object ResolveCreateNamedStruct extends Rule[LogicalPlan] {
   override def apply(plan: LogicalPlan): LogicalPlan = plan.transformAllExpressions {
     case e: CreateNamedStruct if !e.resolved =>
-      val children = e.children.grouped(2).flatMap {
+      val children = e.children.grouped(2) // 两两分组，如(0, 1, 2, 3, 4)会被处理为((0, 1), (2, 3), (4,))
+        .flatMap { // 处理每一个分组对
         case Seq(NamePlaceholder, e: NamedExpression) if e.resolved =>
           Seq(Literal(e.name), e)
         case kv =>

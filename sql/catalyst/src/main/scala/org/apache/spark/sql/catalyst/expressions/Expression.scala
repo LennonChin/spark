@@ -157,6 +157,10 @@ abstract class Expression extends TreeNode[Expression] {
   /**
    * Returns the [[DataType]] of the result of evaluating this expression.  It is
    * invalid to query the dataType of an unresolved expression (i.e., when `resolved` == false).
+   *
+   * 执行该表达式返回的数据的类型。
+   *
+   * 当表达式未被解析时，查询该类型是无效的。
    */
   def dataType: DataType
 

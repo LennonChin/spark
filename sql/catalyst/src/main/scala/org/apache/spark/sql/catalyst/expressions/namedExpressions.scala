@@ -73,6 +73,9 @@ trait NamedExpression extends Expression {
    * 1. Empty Seq: when an attribute doesn't have a qualifier,
    *    e.g. top level attributes aliased in the SELECT clause, or column from a LocalRelation.
    * 2. Single element: either the table name or the alias name of the table.
+   *
+   * 1. 如果是Empty，则说明没有指定表名。
+   * 2. 单个字符串元素，是表名或表的别名。
    */
   def qualifier: Option[String]
 

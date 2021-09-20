@@ -147,7 +147,8 @@ abstract class Optimizer(sessionCatalog: SessionCatalog, conf: CatalystConf)
     Batch("Operator Optimizations", fixedPoint,
       // Operator push down，算子下推
       PushProjectionThroughUnion, // 列剪裁下推
-      ReorderJoin, // Join顺序优化
+      // Join顺序优化，会涉及多对一组合转换ExtractFiltersAndInnerJoins模式的处理（收集Inner类型Join操作中的过滤条件，目前仅支持对左子树进行处理。）
+      ReorderJoin,
       EliminateOuterJoin, // Outer Join消除
       PushPredicateThroughJoin, // 谓词下推到Join算子
       PushDownPredicate, // 谓词下推
@@ -387,11 +388,22 @@ object LimitPushDown extends Rule[LogicalPlan] {
  * Right now, Union means UNION ALL, which does not de-duplicate rows. So, it is
  * safe to pushdown Filters and Projections through it. Filter pushdown is handled by another
  * rule PushDownPredicate. Once we add UNION DISTINCT, we will not be able to pushdown Projections.
+ *
+ * 下推Project操作到Union操作的两边。
+ * 可以安全下推的操作Union操作有以下的说明：
+ *    - 在这种情况下，Union表示UNION ALL，即对重复行没有过滤。这种情况对Filter和Project操作进行下推是安全的。
+ *    - Filter下推被另一个规则PushDownPredicate处理。
+ *    - 一旦我们进行去重的Union，我们不能进行Project下推。
+ *
  */
 object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper {
 
   /**
    * Maps Attributes from the left side to the corresponding Attribute on the right side.
+   *
+   * 根据左右计划的输出做以下操作：
+   * 1. 检查左右计划的输出列数量是否一致。
+   * 2. 将左右计划的输出列一一对应，构造为AttributeMap(Seq[(left_output1, right_output1), (left_output2, right_output2)])的形式
    */
   private def buildRewrites(left: LogicalPlan, right: LogicalPlan): AttributeMap[Attribute] = {
     assert(left.output.size == right.output.size)
@@ -402,6 +414,9 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
    * Rewrites an expression so that it can be pushed to the right side of a
    * Union or Except operator. This method relies on the fact that the output attributes
    * of a union/intersect/except are always equal to the left child's output.
+   *
+   * 重写表达式，以便可以将其下推到Union或Except操作的右边。
+   * 这个操作要求Union/Intersect/Except的输出列需要与左边子节点的输出一致。
    */
   private def pushToRight[A <: Expression](e: A, rewrites: AttributeMap[Attribute]) = {
     val result = e transform {
@@ -431,14 +446,28 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
 
     // Push down deterministic projection through UNION ALL
+    // 匹配Project节点，同时Project节点的子节点需要是Union
     case p @ Project(projectList, Union(children)) =>
       assert(children.nonEmpty)
-      if (projectList.forall(_.deterministic)) {
+      if (projectList.forall(_.deterministic)) { // 进行下推的前提，Project的列都是已经确定的
+        // Union操作的第一个表的转换为Project算子
         val newFirstChild = Project(projectList, children.head)
+        // Union操作剩余的表依次进行重写转换
         val newOtherChildren = children.tail.map { child =>
+          /**
+           * 做了两个操作：
+           * 1. 当前遍历到的表与Union头表的输出字段是否是一致的。
+           * 2. 将当前遍历到的表与Union头表的输出字段映射为Map，然后包装为AttributeMap返回。
+           */
           val rewrites = buildRewrites(children.head, child)
+
+          /**
+           * 对列进行Project操作，生成新的Project List，然后构造为Project节点
+           * 这里其实对遍历到的表的字段进行了裁剪，只留下了projectList中的列
+           */
           Project(projectList.map(pushToRight(_, rewrites)), child)
         }
+        // 合并所有的表为一个新的Union列表，封装为新的Union
         Union(newFirstChild +: newOtherChildren)
       } else {
         p
@@ -668,13 +697,22 @@ object CollapseWindow extends Rule[LogicalPlan] {
  *
  * Note: While this optimization is applicable to all types of join, it primarily benefits Inner and
  * LeftSemi joins.
+ *
+ * 对当前节点的约束条件进行分析，生成额外的过滤条件列表，这些过滤条件不会与当前算子或其子节点现有的过滤条件重叠。
+ * 根据操作节点已有的约束中，生成额外的过滤条件列表，但是会移除已经定义在操作节点的约束条件和子节点的约束。
+ * 这个规则作用于Filter节点或Join操作。
+ *
+ * 注意：这个优化规则适应于所有类型的Join，尤其是Inner Join以及Left-semi Join。
  */
 object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // 对Filter的约束条件进行分析，生成额外的过滤条件列表，这些过滤条件不会与当前算子或其子节点现有的过滤条件重叠
     case filter @ Filter(condition, child) =>
+      // 从Filter的约束条件中生成额外的过滤条件列表
       val newFilters = filter.constraints --
         (child.constraints ++ splitConjunctivePredicates(condition))
       if (newFilters.nonEmpty) {
+        // 额外的过滤条件会与Filter现有的过滤条件组合为And算子
         Filter(And(newFilters.reduce(And), condition), child)
       } else {
         filter
@@ -683,18 +721,23 @@ object InferFiltersFromConstraints extends Rule[LogicalPlan] with PredicateHelpe
     case join @ Join(left, right, joinType, conditionOpt) =>
       // Only consider constraints that can be pushed down completely to either the left or the
       // right child
+      // 生成可以完全下推到Join左节点或右节点的约束
       val constraints = join.constraints.filter { c =>
         c.references.subsetOf(left.outputSet) || c.references.subsetOf(right.outputSet)
       }
       // Remove those constraints that are already enforced by either the left or the right child
+      // 从生成的约束中减去左右子树自身的约束
       val additionalConstraints = constraints -- (left.constraints ++ right.constraints)
       val newConditionOpt = conditionOpt match {
         case Some(condition) =>
+          // 如果存在Join条件，将新生成的约束与Join的现有Join条件进行结合，生成And节点
           val newFilters = additionalConstraints -- splitConjunctivePredicates(condition)
           if (newFilters.nonEmpty) Option(And(newFilters.reduce(And), condition)) else None
         case None =>
+          // 不存在Join条件，直接返回生成的约束构造的And节点
           additionalConstraints.reduceOption(And)
       }
+      // 检查是否生成了新的约束，如果生成了就构造新的Join节点，否则直接返回原有的
       if (newConditionOpt.isDefined) Join(left, right, joinType, newConditionOpt) else join
   }
 }
@@ -966,6 +1009,13 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
  * attributes of the left or right side of sub query when applicable.
  *
  * Check https://cwiki.apache.org/confluence/display/Hive/OuterJoinBehavior for more details
+ *
+ * 将某些过滤条件仅仅作用于Join左表或者右表其中一个的Filter操作进行下推。
+ * 其他的Filter的过滤条件会被移入到Join的条件中。
+ *
+ * 并且在合适的时候对某些仅仅作用于Join左表或者右表子查询的Join Filter类型的过滤条件进行下推。
+ *
+ * 可以参考Hive的OuterJoinBehavior规则。
  */
 object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
   /**
@@ -981,92 +1031,137 @@ object PushPredicateThroughJoin extends Rule[LogicalPlan] with PredicateHelper {
     // any deterministic expression that follows a non-deterministic expression. To achieve this,
     // we only consider pushing down those expressions that precede the first non-deterministic
     // expression in the condition.
+    // 将condition中条件分为已确定的下推候选条件（pushDownCandidates）和未确定的过滤条件（containingNonDeterministic）两部分
     val (pushDownCandidates, containingNonDeterministic) = condition.span(_.deterministic)
+    // 将已确定的下推候选条件分为左表可用的下推条件（leftEvaluateCondition）和剩下的（rest）
     val (leftEvaluateCondition, rest) =
       pushDownCandidates.partition(_.references.subsetOf(left.outputSet))
+    // 将剩下的下推条件（rest）中分为右表可用的下推条件（rightEvaluateCondition）和公共的下推条件（commonCondition）
     val (rightEvaluateCondition, commonCondition) =
         rest.partition(expr => expr.references.subsetOf(right.outputSet))
 
+    // 返回(左表可用的下推条件, 右表可用的下推条件, 公共的下推条件（包括未确定的）)
     (leftEvaluateCondition, rightEvaluateCondition, commonCondition ++ containingNonDeterministic)
   }
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     // push the where condition down into join filter
+    // 针对子节点是Join的Filter节点，将WHERE过滤条件下推到Join中，这种说明是既存在Join中的谓词（ON），也存在Join后的谓词（WHERE）
     case f @ Filter(filterCondition, Join(left, right, joinType, joinCondition)) =>
+      // 针对Filter的过滤及约束条件，划分为左表谓词条件、右表谓词条件和公共谓词条件
       val (leftFilterConditions, rightFilterConditions, commonFilterCondition) =
         split(splitConjunctivePredicates(filterCondition), left, right)
+
+      // 根据Join类型分别处理
       joinType match {
-        case _: InnerLike =>
+        case _: InnerLike => // Inner join，ON谓词和WHERE谓词全往下推
           // push down the single side `where` condition into respective sides
+          // 重新构造Join左节点为Filter下推的节点，即Join(left, ...) -> Filter(leftFilterConditions, left)
           val newLeft = leftFilterConditions.
             reduceLeftOption(And).map(Filter(_, left)).getOrElse(left)
+          // 重新构造Join右节点为Filter下推的节点，即Join(..., right, ...) -> Filter(rightFilterConditions, right)
           val newRight = rightFilterConditions.
             reduceLeftOption(And).map(Filter(_, right)).getOrElse(right)
+          // 从剩余谓词条件里找出不包含子查询的过滤条件
           val (newJoinConditions, others) =
             commonFilterCondition.partition(e => !SubqueryExpression.hasCorrelatedSubquery(e))
+          // 将找出的剩余的谓词条件与Join现有的条件合并，得到新的Join条件
           val newJoinCond = (newJoinConditions ++ joinCondition).reduceLeftOption(And)
 
+          // 以新左节点、新右节点、新Join条件构造新的Join节点
           val join = Join(newLeft, newRight, joinType, newJoinCond)
           if (others.nonEmpty) {
+            // 如果还存未处理的过滤条件，就构造为Filter节点，并将新构造的Join作为其子节点，返回
             Filter(others.reduceLeft(And), join)
           } else {
+            // 未剩余其他过滤条件，直接返回新的Join节点
             join
           }
-        case RightOuter =>
+        case RightOuter => // Right outer join，ON谓词可往左表推，WHERE谓词可往右表推
           // push down the right side only `where` condition
+          // 左表保持不变
           val newLeft = left
+          // 将Filter中的WHERE谓词往右表推，即Join(..., right, ...) -> Filter(rightFilterConditions, right)
           val newRight = rightFilterConditions.
             reduceLeftOption(And).map(Filter(_, right)).getOrElse(right)
+
+          // Join条件保持不变
           val newJoinCond = joinCondition
+
+          // 根据新的右表构造新的Join节点
           val newJoin = Join(newLeft, newRight, RightOuter, newJoinCond)
 
+          // 根据左表相关谓词条件和公共谓词条件，决定是否需要在Join上层构造Filter节点
           (leftFilterConditions ++ commonFilterCondition).
             reduceLeftOption(And).map(Filter(_, newJoin)).getOrElse(newJoin)
-        case LeftOuter | LeftExistence(_) =>
+        case LeftOuter | LeftExistence(_) => // Left outer join or Left exists（Left semi/anti、Exists），ON谓词可往右表推，WHERE谓词可往左表推
           // push down the left side only `where` condition
+          // 将Filter中的WHERE谓词往左表推，即Join(left, ...) -> Filter(leftFilterConditions, left)
           val newLeft = leftFilterConditions.
             reduceLeftOption(And).map(Filter(_, left)).getOrElse(left)
+          // 右表保持不变
           val newRight = right
+
+          // Join条件保持不变
           val newJoinCond = joinCondition
+
+          // 根据新的左表构造新的Join节点
           val newJoin = Join(newLeft, newRight, joinType, newJoinCond)
 
+          // 根据右表相关谓词条件和公共谓词条件，决定是否需要在Join上层构造Filter节点
           (rightFilterConditions ++ commonFilterCondition).
             reduceLeftOption(And).map(Filter(_, newJoin)).getOrElse(newJoin)
-        case FullOuter => f // DO Nothing for Full Outer Join
+        case FullOuter => f // DO Nothing for Full Outer Join，Full outer join无下推操作
         case NaturalJoin(_) => sys.error("Untransformed NaturalJoin node")
         case UsingJoin(_, _) => sys.error("Untransformed Using join node")
       }
 
     // push down the join filter into sub query scanning if applicable
+    // 如果可行的话，将Join的过滤条件下推到扫描子查询中
     case j @ Join(left, right, joinType, joinCondition) =>
+      // 针对Join的谓词条件，划分为左表谓词条件、右表谓词条件和公共谓词条件
       val (leftJoinConditions, rightJoinConditions, commonJoinCondition) =
         split(joinCondition.map(splitConjunctivePredicates).getOrElse(Nil), left, right)
 
       joinType match {
-        case _: InnerLike | LeftSemi =>
+        case _: InnerLike | LeftSemi => // Inner join or Left semi join
           // push down the single side only join filter for both sides sub queries
+          // 重新构造Join左节点为Filter下推的节点，即Join(left, ...) -> Filter(leftJoinConditions, left)
           val newLeft = leftJoinConditions.
             reduceLeftOption(And).map(Filter(_, left)).getOrElse(left)
+          // 重新构造Join右节点为Filter下推的节点，即Join(..., right, ...) -> Filter(rightFilterConditions, right)
           val newRight = rightJoinConditions.
             reduceLeftOption(And).map(Filter(_, right)).getOrElse(right)
+          // 剩余的公共谓词条件作为Join条件
           val newJoinCond = commonJoinCondition.reduceLeftOption(And)
 
+          // 以新的左表谓词条件、新的右表谓词条件和新的Join条件构造新的Join
           Join(newLeft, newRight, joinType, newJoinCond)
-        case RightOuter =>
+        case RightOuter => // Right outer join，ON谓词可往左表推，WHERE谓词可往右表推
           // push down the left side only join filter for left side sub query
+          // 重新构造Join左节点为Filter下推的节点，即Join(left, ...) -> Filter(leftJoinConditions, left)
           val newLeft = leftJoinConditions.
             reduceLeftOption(And).map(Filter(_, left)).getOrElse(left)
+          // 右表不变
           val newRight = right
+
+          // 以右表谓词和公共谓词作为新的Join条件
           val newJoinCond = (rightJoinConditions ++ commonJoinCondition).reduceLeftOption(And)
 
+          // 以新的左表谓词条件、旧的右表谓词条件和新的Join条件构造新的Join
           Join(newLeft, newRight, RightOuter, newJoinCond)
-        case LeftOuter | LeftAnti | ExistenceJoin(_) =>
+        case LeftOuter | LeftAnti | ExistenceJoin(_) => // Left outer join or Left anti join or Exists join，ON谓词可往右表推，WHERE谓词可往左表推
           // push down the right side only join filter for right sub query
+          // 左表不变
           val newLeft = left
+          // 重新构造Join右节点为Filter下推的节点，即Join(..., right, ...) -> Filter(rightFilterConditions, right)
           val newRight = rightJoinConditions.
             reduceLeftOption(And).map(Filter(_, right)).getOrElse(right)
+
+          // 以左表谓词和公共谓词作为新的Join条件
           val newJoinCond = (leftJoinConditions ++ commonJoinCondition).reduceLeftOption(And)
 
+          // 以旧的左表谓词条件、新的右表谓词条件和新的Join条件构造新的Join
           Join(newLeft, newRight, joinType, newJoinCond)
         case FullOuter => j
         case NaturalJoin(_) => sys.error("Untransformed NaturalJoin node")

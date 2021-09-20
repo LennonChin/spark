@@ -101,6 +101,16 @@ object ReorderJoin extends Rule[LogicalPlan] with PredicateHelper {
  * - full outer -> right outer if only the right side has such predicates
  *
  * This rule should be executed before pushing down the Filter
+ *
+ * 消除Outer join，如果谓词可以约束最终的结果集中null值行可以被消除。
+ * 这条规则即是常见查询优化中的Reject Null空值拒绝，即在Outer join中如果空值填充表使用了过滤Null值的谓词，
+ * 那么Outer join是可以被转换为Inner join或更小粒度的Outer join的；具体有以下几种情况：
+ *  1. 如果Full outer join两侧都有Reject Null谓词，那么可以转换为Inner join。
+ *  2. 如果Left outer join中右侧的表存在Reject Null谓词，那么可以转换为Inner join。
+ *  3. 如果Right outer join中左侧表存在Reject Null谓词，那么可以转换为Inner join。
+ *  4. 如果Full outer join中只有左侧表存在Reject Null谓词，那么可以转换为Left outer join。
+ *  5. 如果Full outer join中只有右侧表存在Reject Null谓词，那么可以转换为Right outer join。
+ *
  */
 object EliminateOuterJoin extends Rule[LogicalPlan] with PredicateHelper {
 
@@ -108,23 +118,34 @@ object EliminateOuterJoin extends Rule[LogicalPlan] with PredicateHelper {
    * Returns whether the expression returns null or false when all inputs are nulls.
    */
   private def canFilterOutNull(e: Expression): Boolean = {
+    // 表达式为确定，或者表达式还存在子查询相关表达式，直接返回
     if (!e.deterministic || SubqueryExpression.hasCorrelatedSubquery(e)) return false
+    // 获取表达式中的列引用
     val attributes = e.references.toSeq
+    // 以列数量构建一个具有等同Null列的行
     val emptyRow = new GenericInternalRow(attributes.length)
+    // 检查表达式中是否存在不可执行的表达式，如果存在就返回false
     val boundE = BindReferences.bindReference(e, attributes)
     if (boundE.find(_.isInstanceOf[Unevaluable]).isDefined) return false
+    // 传入值全为Null的空行进行测试
     val v = boundE.eval(emptyRow)
+    // 得到的结果为null，或得到的结果是false，说明存在NOT NULL过滤
     v == null || v == false
   }
 
   private def buildNewJoinType(filter: Filter, join: Join): JoinType = {
+    // 对Filter节点的过滤条件及约束条件进行整合
     val conditions = splitConjunctivePredicates(filter.condition) ++ filter.constraints
+    // 根据Filter过滤条件最终的输出列，判断这些列是否存在于Join左表的输出列中，如果存在说明这个Filter条件是与Join左表相关的
     val leftConditions = conditions.filter(_.references.subsetOf(join.left.outputSet))
+    // 根据Filter过滤条件最终的输出列，判断这些列是否存在于Join右表的输出列中，如果存在说明这个Filter条件是与Join右表相关的
     val rightConditions = conditions.filter(_.references.subsetOf(join.right.outputSet))
 
+    // 检查是否存在Reject Null空值拒绝的谓词
     val leftHasNonNullPredicate = leftConditions.exists(canFilterOutNull)
     val rightHasNonNullPredicate = rightConditions.exists(canFilterOutNull)
 
+    // 对Join类型进行匹配，根据Reject Null谓词，得到新的Join类型
     join.joinType match {
       case RightOuter if leftHasNonNullPredicate => Inner
       case LeftOuter if rightHasNonNullPredicate => Inner
@@ -135,9 +156,12 @@ object EliminateOuterJoin extends Rule[LogicalPlan] with PredicateHelper {
     }
   }
 
-  def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+  def apply(plan: LogicalPlan): LogicalPlan = plan transform { // 遍历所有节点
+    // 匹配Filter节点，且其子节点是Outer Join中的一种
     case f @ Filter(condition, j @ Join(_, _, RightOuter | LeftOuter | FullOuter, _)) =>
+      // 根据Filter和Join节点计算新的优化后的Join类型
       val newJoinType = buildNewJoinType(f, j)
+      // 如果优化后的Join类型与旧的相同，直接返回原始节点，否则以新的Join类型构造新的Join节点，封装为Filter节点返回
       if (j.joinType == newJoinType) f else Filter(condition, j.copy(joinType = newJoinType))
   }
 }

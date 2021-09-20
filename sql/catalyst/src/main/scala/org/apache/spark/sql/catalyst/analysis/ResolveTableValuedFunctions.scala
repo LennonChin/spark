@@ -26,6 +26,7 @@ import org.apache.spark.sql.types.{DataType, IntegerType, LongType}
 
 /**
  * Rule that resolves table-valued function references.
+ * 解析Table-Valued函数引用
  */
 object ResolveTableValuedFunctions extends Rule[LogicalPlan] {
   /**
@@ -35,6 +36,12 @@ object ResolveTableValuedFunctions extends Rule[LogicalPlan] {
     /**
      * Try to cast the expressions to satisfy the expected types of this argument list. If there
      * are any types that cannot be casted, then None is returned.
+     *
+     * 尝试转换表达式以满足参数的预期类型，如果转换失败就返回None。
+     * 比如对于range(0, 10, 2, 3)生成Range(0, 10, 2, Some(3))，对应的的类型如下：
+     * tvf("start" -> LongType, "end" -> LongType, "step" -> LongType, "numPartitions" -> IntegerType)
+     *
+     * 这个方法会对Range中的各个参数尝试转换。
      */
     def implicitCast(values: Seq[Expression]): Option[Seq[Expression]] = {
       if (args.length == values.length) {
@@ -79,23 +86,23 @@ object ResolveTableValuedFunctions extends Rule[LogicalPlan] {
    */
   private val builtinFunctions: Map[String, TVF] = Map(
     "range" -> Map(
-      /* range(end) */
+      /* range(end) -> Range(0, end, 1, None) */
       tvf("end" -> LongType) { case Seq(end: Long) =>
         Range(0, end, 1, None)
       },
 
-      /* range(start, end) */
+      /* range(start, end) -> Range(start, end, 1, None)  */
       tvf("start" -> LongType, "end" -> LongType) { case Seq(start: Long, end: Long) =>
         Range(start, end, 1, None)
       },
 
-      /* range(start, end, step) */
+      /* range(start, end, step) -> Range(start, end, step, None) */
       tvf("start" -> LongType, "end" -> LongType, "step" -> LongType) {
         case Seq(start: Long, end: Long, step: Long) =>
           Range(start, end, step, None)
       },
 
-      /* range(start, end, step, numPartitions) */
+      /* range(start, end, step, numPartitions) -> Range(start, end, step, Some(numPartitions)) */
       tvf("start" -> LongType, "end" -> LongType, "step" -> LongType,
           "numPartitions" -> IntegerType) {
         case Seq(start: Long, end: Long, step: Long, numPartitions: Int) =>
@@ -104,10 +111,21 @@ object ResolveTableValuedFunctions extends Rule[LogicalPlan] {
   )
 
   override def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+    // 匹配UnresolvedTableValuedFunction节点，同时它的函数参数都应该已经解析好了
     case u: UnresolvedTableValuedFunction if u.functionArgs.forall(_.resolved) =>
+      /**
+       * 从builtinFunctions中根据函数名进行获取，目前只支持range函数
+       * 该过程会对Range的start、end、step及numSlices四个参数进行匹配和填充，
+       * 没有指定的会填充为默认值。
+       * 1. start的默认值是0。
+       * 2. step的默认值是1。
+       * 3. numSlices的默认值是None。
+       * 3. end必须指定。
+       */
       builtinFunctions.get(u.functionName) match {
         case Some(tvf) =>
-          val resolved = tvf.flatMap { case (argList, resolver) =>
+          val resolved = tvf.flatMap { case (argList: ResolveTableValuedFunctions.ArgumentList, resolver) =>
+            // 对函数的各个参数尝试转换为正确的类型。
             argList.implicitCast(u.functionArgs) match {
               case Some(casted) =>
                 Some(resolver(casted.map(_.eval())))

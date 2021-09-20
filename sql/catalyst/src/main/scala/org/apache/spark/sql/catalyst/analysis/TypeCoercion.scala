@@ -81,21 +81,25 @@ object TypeCoercion {
    * the operation. Those rules are implemented in [[DecimalPrecision]].
    */
   val findTightestCommonTypeOfTwo: (DataType, DataType) => Option[DataType] = {
-    case (t1, t2) if t1 == t2 => Some(t1)
+    case (t1, t2) if t1 == t2 => Some(t1) // 相同，返回任意一个即可
+    // 其中一个为NullType，返回另一个
     case (NullType, t1) => Some(t1)
     case (t1, NullType) => Some(t1)
 
+    // Integral、Decimal，返回更宽的类型
     case (t1: IntegralType, t2: DecimalType) if t2.isWiderThan(t1) =>
       Some(t2)
     case (t1: DecimalType, t2: IntegralType) if t1.isWiderThan(t2) =>
       Some(t1)
 
     // Promote numeric types to the highest of the two
+    // Numeric，返回二者中较宽的类型
     case (t1: NumericType, t2: NumericType)
         if !t1.isInstanceOf[DecimalType] && !t2.isInstanceOf[DecimalType] =>
       val index = numericPrecedence.lastIndexWhere(t => t == t1 || t == t2)
       Some(numericPrecedence(index))
 
+    // Timestamp、Date，返回Timestamp
     case (_: TimestampType, _: DateType) | (_: DateType, _: TimestampType) =>
       Some(TimestampType)
 
@@ -636,14 +640,14 @@ object TypeCoercion {
       case b @ BinaryOperator(left, right) if left.dataType != right.dataType =>
         // 找到对于左右表达式节点来讲最佳的共同数据类型。
         findTightestCommonTypeOfTwo(left.dataType, right.dataType).map { commonType =>
-          if (b.inputType.acceptsType(commonType)) {
+          if (b.inputType.acceptsType(commonType)) { // 需要确保输入类型能接受得到的共同数据类型
             // If the expression accepts the tightest common type, cast to that.
-            val newLeft = if (left.dataType == commonType) left else Cast(left, commonType)
-            val newRight = if (right.dataType == commonType) right else Cast(right, commonType)
-            b.withNewChildren(Seq(newLeft, newRight))
+            val newLeft = if (left.dataType == commonType) left else Cast(left, commonType) // 可能转换为Cast节点
+            val newRight = if (right.dataType == commonType) right else Cast(right, commonType) // 可能转换为Cast节点
+            b.withNewChildren(Seq(newLeft, newRight)) // 使用新的左右表达式替换旧的
           } else {
             // Otherwise, don't do anything with the expression.
-            b
+            b // 输入类型不能接收，直接返回
           }
         }.getOrElse(b)  // If there is no applicable conversion, leave expression unchanged.
 
@@ -672,47 +676,56 @@ object TypeCoercion {
      *
      * If the expression already fits the input type, we simply return the expression itself.
      * If the expression has an incompatible type that cannot be implicitly cast, return None.
+     *
+     * 尝试转换给定的e表达式为预期类型expectedType。
+     *
+     * 如果表达式e能够匹配输入类型，简单地返回表达式即可。
+     * 如果表达式存在不匹配的类型导致无法进行隐式转换，就返回None。
      */
     def implicitCast(e: Expression, expectedType: AbstractDataType): Option[Expression] = {
-      val inType = e.dataType
+      val inType = e.dataType // 表达式执行后的结果类型
 
       // Note that ret is nullable to avoid typing a lot of Some(...) in this local scope.
       // We wrap immediately an Option after this.
       @Nullable val ret: Expression = (inType, expectedType) match {
 
         // If the expected type is already a parent of the input type, no need to cast.
-        case _ if expectedType.acceptsType(inType) => e
+        case _ if expectedType.acceptsType(inType) => e // 预期类型匹配给定类型，直接返回预期类型
 
         // Cast null type (usually from null literals) into target types
-        case (NullType, target) => Cast(e, target.defaultConcreteType)
+        case (NullType, target) => Cast(e, target.defaultConcreteType) // Cast(Null, 预期类型的默认类型)
 
         // If the function accepts any numeric type and the input is a string, we follow the hive
         // convention and cast that input into a double
-        case (StringType, NumericType) => Cast(e, NumericType.defaultConcreteType)
+        // 接收Numeric输入类型，但输出是String，遵从Hive的做法，转换为Double类型
+        case (StringType, NumericType) => Cast(e, NumericType.defaultConcreteType) // Cast(String, DoubleType)
 
         // Implicit cast among numeric types. When we reach here, input type is not acceptable.
 
         // If input is a numeric type but not decimal, and we expect a decimal type,
         // cast the input to decimal.
-        case (d: NumericType, DecimalType) => Cast(e, DecimalType.forType(d))
+        // 接收Numeric输入类型，但输出是Decimal，转换为具体的Decimal类型
+        case (d: NumericType, DecimalType) => Cast(e, DecimalType.forType(d)) // Cast(NumericType, Decimal)
         // For any other numeric types, implicitly cast to each other, e.g. long -> int, int -> long
-        case (_: NumericType, target: NumericType) => Cast(e, target)
+        // 其他的Numeric类型，直接转换为预期类型
+        case (_: NumericType, target: NumericType) => Cast(e, target) // Cast(Numeric, Numeric)
 
         // Implicit cast between date time types
-        case (DateType, TimestampType) => Cast(e, TimestampType)
-        case (TimestampType, DateType) => Cast(e, DateType)
+        case (DateType, TimestampType) => Cast(e, TimestampType) // Cast(DateType, TimestampType)
+        case (TimestampType, DateType) => Cast(e, DateType) // Cast(TimestampType, DateType)
 
         // Implicit cast from/to string
-        case (StringType, DecimalType) => Cast(e, DecimalType.SYSTEM_DEFAULT)
-        case (StringType, target: NumericType) => Cast(e, target)
-        case (StringType, DateType) => Cast(e, DateType)
-        case (StringType, TimestampType) => Cast(e, TimestampType)
-        case (StringType, BinaryType) => Cast(e, BinaryType)
+        case (StringType, DecimalType) => Cast(e, DecimalType.SYSTEM_DEFAULT) // Cast(String, Decimal(38, 18))
+        case (StringType, target: NumericType) => Cast(e, target) // Cast(String, NumericType)
+        case (StringType, DateType) => Cast(e, DateType) // Cast(String, DateType)
+        case (StringType, TimestampType) => Cast(e, TimestampType) // Cast(String, TimestampType)
+        case (StringType, BinaryType) => Cast(e, BinaryType) // Cast(String, BinaryType)
         // Cast any atomic type to string.
-        case (any: AtomicType, StringType) if any != StringType => Cast(e, StringType)
+        case (any: AtomicType, StringType) if any != StringType => Cast(e, StringType) // Cast(AtomicType, StringType)
 
         // When we reach here, input type is not acceptable for any types in this type collection,
         // try to find the first one we can implicitly cast.
+        // 其他情况，说明输入类型对类型集内的类型都无法匹配，就尝试找一个最接近的
         case (_, TypeCollection(types)) => types.flatMap(implicitCast(e, _)).headOption.orNull
 
         // Else, just return the same input expression

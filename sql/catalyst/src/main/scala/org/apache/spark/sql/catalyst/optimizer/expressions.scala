@@ -40,13 +40,14 @@ import org.apache.spark.sql.types._
  */
 object ConstantFolding extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
-    case q: LogicalPlan => q transformExpressionsDown {
+    case q: LogicalPlan => q transformExpressionsDown { // 遍历所有的表达式
       // Skip redundant folding of literals. This rule is technically not necessary. Placing this
       // here avoids running the next rule for Literal values, which would create a new Literal
       // object and running eval unnecessarily.
-      case l: Literal => l
+      case l: Literal => l // Literal字面量直接返回
 
       // Fold expressions that are foldable.
+      // 表达式可以折叠，就尝试进行折叠
       case e if e.foldable => Literal.create(e.eval(EmptyRow), e.dataType)
     }
   }

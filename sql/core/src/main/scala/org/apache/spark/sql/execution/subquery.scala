@@ -143,12 +143,16 @@ case class PlanSubqueries(sparkSession: SparkSession) extends Rule[SparkPlan] {
   def apply(plan: SparkPlan): SparkPlan = {
     plan.transformAllExpressions {
       case subquery: expressions.ScalarSubquery => // 标量子查询
+        // 将子查询构造为单独的计划
         val executedPlan = new QueryExecution(sparkSession, subquery.plan).executedPlan
+        // 根据子查询单独的计划构造ScalarSubquery
         ScalarSubquery(
           SubqueryExec(s"subquery${subquery.exprId.id}", executedPlan),
           subquery.exprId)
       case expressions.PredicateSubquery(query, Seq(e: Expression), _, exprId) => // 过滤谓词
+        // 将子查询构造为单独的计划
         val executedPlan = new QueryExecution(sparkSession, query).executedPlan
+        // 根据子查询单独的计划构造InSubquery
         InSubquery(e, SubqueryExec(s"subquery${exprId.id}", executedPlan), exprId)
     }
   }
@@ -162,15 +166,17 @@ case class PlanSubqueries(sparkSession: SparkSession) extends Rule[SparkPlan] {
 case class ReuseSubquery(conf: SQLConf) extends Rule[SparkPlan] {
 
   def apply(plan: SparkPlan): SparkPlan = {
-    if (!conf.exchangeReuseEnabled) {
+    if (!conf.exchangeReuseEnabled) { // spark.sql.exchange.reuse
       return plan
     }
     // Build a hash map using schema of exchanges to avoid O(N*N) sameResult calls.
     val subqueries = mutable.HashMap[StructType, ArrayBuffer[SubqueryExec]]()
-    plan transformAllExpressions {
+    plan transformAllExpressions { // 先序遍历所有的表达式
       case sub: ExecSubqueryExpression =>
+        // 查找并记录ExecSubqueryExpression表达式
         val sameSchema = subqueries.getOrElseUpdate(sub.plan.schema, ArrayBuffer[SubqueryExec]())
         val sameResult = sameSchema.find(_.sameResult(sub.plan))
+        // 存在相同的ExecSubqueryExpression表达式，使用该表达式构造新的计划返回
         if (sameResult.isDefined) {
           sub.withNewPlan(sameResult.get)
         } else {

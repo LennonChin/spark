@@ -370,7 +370,8 @@ case class EnsureRequirements(conf: SQLConf) extends Rule[SparkPlan] {
     // 当匹配到Exchange节点（ShuffleExchange）且其子节点也是Exchange类型时，会检查两者的Partitioning方式，判断能否消除多余的Exchange节点。
     case operator @ ShuffleExchange(partitioning, child, _) =>
       child.children match {
-        case ShuffleExchange(childPartitioning, baseChild, _)::Nil =>
+        case ShuffleExchange(childPartitioning, baseChild, _) :: Nil =>
+          // 如果子节点的Partitioning能够保证与父节点的Partitioning的分区分布一直，就将父节点直接换成子节点，否则不做改变。
           if (childPartitioning.guarantees(partitioning)) child else operator
         case _ => operator
       }

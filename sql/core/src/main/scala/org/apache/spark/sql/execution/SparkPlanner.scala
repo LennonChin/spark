@@ -35,12 +35,16 @@ class SparkPlanner(
   // 提供给plan方法应用的策略集合
   def strategies: Seq[Strategy] =
       extraStrategies ++ (
-      FileSourceStrategy :: // 数据文件扫描计划
-      DataSourceStrategy :: // 各种数据源相关的计划
+        // 数据文件扫描计划，会涉及多对一组合转换PhysicalOperation模式的处理（匹配逻辑算子树中的Project和Filter等节点，返回投影列、过滤条件集合和子节点。）
+      FileSourceStrategy ::
+        // 各种数据源相关的计划，会涉及多对一组合转换PhysicalOperation模式的处理（匹配逻辑算子树中的Project和Filter等节点，返回投影列、过滤条件集合和子节点。）
+      DataSourceStrategy ::
       DDLStrategy :: // DDL操作执行计划
       SpecialLimits :: // 特殊Limit操作的执行计划
-      Aggregation :: // 聚合算子相关的执行计划
-      JoinSelection :: // Join操作相关的执行计划
+        // 聚合算子相关的执行计划，会涉及多对一组合转换PhysicalAggregation模式的处理（针对聚合操作，提取出聚合算子中的各个部分，并对一些表达式进行初步的转换。）
+      Aggregation ::
+        // Join操作相关的执行计划，会涉及多对一组合转换ExtractEquiJoinKeys模式的处理（针对具有相等条件的Join操作的算子集合，提取出其中的Join条件、左子节点和右子节点等信息。）
+      JoinSelection ::
       InMemoryScans :: // 内存数据表扫描计划
       BasicOperators :: Nil) // 对基本算子生成的执行计划
 

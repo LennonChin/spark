@@ -279,6 +279,13 @@ case class Union(children: Seq[LogicalPlan]) extends LogicalPlan {
   }
 }
 
+/**
+ * Join节点
+ * @param left Join操作左表
+ * @param right Join操作右表
+ * @param joinType Join类型
+ * @param condition Join的条件
+ */
 case class Join(
     left: LogicalPlan,
     right: LogicalPlan,
@@ -286,43 +293,45 @@ case class Join(
     condition: Option[Expression])
   extends BinaryNode with PredicateHelper {
 
+  // 输出列
   override def output: Seq[Attribute] = {
     joinType match {
       case j: ExistenceJoin =>
-        left.output :+ j.exists
-      case LeftExistence(_) =>
+        left.output :+ j.exists // exists类型的join，输出列是左表和exists操作的字段
+      case LeftExistence(_) => // left exist类型的join，输出列式左表的字段
         left.output
-      case LeftOuter =>
+      case LeftOuter => // left outer join，输出列是左表字段和右表字段的并集，但会对右表字段进行Nullability的转换
         left.output ++ right.output.map(_.withNullability(true))
-      case RightOuter =>
+      case RightOuter => // right outer join，输出列是右表字段和左表字段的并集，但会对左表字段进行Nullability的转换
         left.output.map(_.withNullability(true)) ++ right.output
-      case FullOuter =>
+      case FullOuter => // full outer join，输出列是右表字段和左表字段的并集，但会对左右两个表都进行Nullability的转换
         left.output.map(_.withNullability(true)) ++ right.output.map(_.withNullability(true))
-      case _ =>
+      case _ => // 其他join，输出列式左右表字段的并集
         left.output ++ right.output
     }
   }
 
+  // 检查约束条件
   override protected def validConstraints: Set[Expression] = {
     joinType match {
-      case _: InnerLike if condition.isDefined =>
+      case _: InnerLike if condition.isDefined => // inner类型的join（cross、inner），且join条件是被定义的，需要左右表的约束以及join操作条件的约束
         left.constraints
           .union(right.constraints)
           .union(splitConjunctivePredicates(condition.get).toSet)
-      case LeftSemi if condition.isDefined =>
+      case LeftSemi if condition.isDefined => // left semi join只需要左表的约束以及join操作条件的约束
         left.constraints
           .union(splitConjunctivePredicates(condition.get).toSet)
-      case j: ExistenceJoin =>
+      case j: ExistenceJoin => // exists join只需要左表的约束
         left.constraints
-      case _: InnerLike =>
+      case _: InnerLike => // inner类型的join（cross、inner），且join条件未被定义的，需要左右表的约束以
         left.constraints.union(right.constraints)
-      case LeftExistence(_) =>
+      case LeftExistence(_) => // left exists join只需要左表的约束
         left.constraints
-      case LeftOuter =>
+      case LeftOuter => // left outer join只需要左表的约束
         left.constraints
-      case RightOuter =>
+      case RightOuter => // right outer join只需要右表的约束
         right.constraints
-      case FullOuter =>
+      case FullOuter => // full outer join约束为空
         Set.empty[Expression]
     }
   }
@@ -349,6 +358,7 @@ case class Join(
   override lazy val statistics: Statistics = joinType match {
     case LeftAnti | LeftSemi =>
       // LeftSemi and LeftAnti won't ever be bigger than left
+      // left semi join和left anti join的输出大小不会超过左表的输出大小
       left.statistics.copy()
     case _ =>
       // make sure we don't propagate isBroadcastable in other joins, because
@@ -591,9 +601,13 @@ object Expand {
    * multiple output rows for an input row.
    *
    * @param bitmasks The bitmask set represents the grouping sets
+   *                 grouping sets操作使用掩码
    * @param groupByAliases The aliased original group by expressions
+   *                       Group by列别名列表
    * @param groupByAttrs The attributes of aliased group by expressions
+   *                     Group by列
    * @param gid Attribute of the grouping id
+   *            grouping id的列
    * @param child Child operator
    */
   def apply(
@@ -667,9 +681,11 @@ case class Expand(
  *                     其中二进制0表示对应下标的列参与group by操作，二进制1表示对应下标的列不参与group by操作（这里表示为null）。
  * @param groupByExprs The Group By expressions candidates, take effective only if the
  *                     associated bit in the bitmask set to 1.
+ *                     group by的列
  * @param child        Child operator
  * @param aggregations The Aggregation expressions, those non selected group by expressions
  *                     will be considered as constant null if it appears in the expressions
+ *                     select的列，也可称作聚合的表达式。
  */
 case class GroupingSets(
     bitmasks: Seq[Int],

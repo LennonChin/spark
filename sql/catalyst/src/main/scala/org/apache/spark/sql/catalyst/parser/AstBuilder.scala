@@ -435,14 +435,50 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
      * 对ctx.relation（类型为List<RelationContext>）进行左折叠操作，
      * 将已经生成的逻辑计划与新的RelationContext中的主要数据表（relationPrimary）结合
      * 得到Join算子（optionalMap方法），然后将生成的Join算子加入新的逻辑计划中。
+     *
+     * 该操作分两步：
+     * 1. 处理单个Relation内的Join关系。
+     * 2. 处理多个Relation之间的Join关系。
+     *
+     * 例如SQL：
+     *
+     * select
+     *    p2.name, c2.name
+     * from person as p2, (
+     *    select
+     *        p1.id, c1.name
+     *    from company as c1
+     *    join person as p1
+     *    on c1.id = p1.company_id) as c2
+     * where p2.company_id = c2.id
+     *
+     * 在上面的SQL中：
+     * 1. p1和c1构成Relation内的Join。
+     * 2. p2和c2构成Relation间的Join。
+     *
+     * 在处理过程中会先处理p1和c1之间的Join，然后处理p2和c2之间的Join，生成的Unresolved LogicalPlan如下：
+     * == Parsed Logical Plan ==
+     * 'Project ['p2.name, 'c2.name]
+     * +- 'Filter ('p2.company_id = 'c2.id)
+     *    +- 'Join Inner
+     *        :- 'UnresolvedRelation `person`, p2
+     *        +- 'SubqueryAlias c2
+     *            +- 'Project ['p1.id, 'c1.name]
+     *                +- 'Join Inner, ('c1.id = 'p1.company_id)
+     *                    :- 'UnresolvedRelation `company`, c1
+     *                    +- 'UnresolvedRelation `person`, p1
+     *
+     * 可以看到，底层的Join Inner是p1和c1组成的，上面的Join Inner是p2和c2组成的。
      */
     val from = ctx.relation.asScala.foldLeft(null: LogicalPlan) { (left: LogicalPlan, relation: RelationContext) =>
       // 生成主表的逻辑计划
       val right: LogicalPlan = plan(relation.relationPrimary)
-      // 可能有Join操作的表
+      // Relation可能有多个，此时相邻Relation之间会生成Join节点（即Join(left, right)），否则直接返回right
       val join: LogicalPlan = right.optionalMap(left)(Join(_, _, Inner, None))
+      // 对Join节点进行转换
       withJoinRelations(join, relation)
     }
+    // 如果存在侧写，就生成Generate节点，注意，侧写可以有多个，ctx.lateralView类型是List<LateralViewContext>
     ctx.lateralView.asScala.foldLeft(from)(withGenerate)
   }
 
@@ -518,6 +554,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
     // Note that mapValues creates a view instead of materialized map. We force materialization by
     // mapping over identity.
+    // 将已有的计划作为其子节点
     WithWindowDefinition(windowMapView.map(identity), query)
   }
 
@@ -529,23 +566,43 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
       selectExpressions: Seq[NamedExpression],
       query: LogicalPlan): LogicalPlan = withOrigin(ctx) {
     import ctx._
+    // 获得Group By的列表达式列表
     val groupByExpressions = expressionList(groupingExpressions)
 
     if (GROUPING != null) { // 如果有GROUPING SETS
       // GROUP BY .... GROUPING SETS (...)
       val expressionMap = groupByExpressions.zipWithIndex.toMap
       val numExpressions = expressionMap.size
+
+      /**
+       * Group By里使用掩码对Group By的表达式进行标记，
+       * 例如SQL：select ... from t group by a, b, c grouping sets ((a), (b))，
+       *    由于Grouping sets用到了(a)和(b)两个字段，生成的掩码二进制分别为110和101，即整数6和5。
+       * 例如SQL：select ... from t group by a, b, c grouping sets ((a, b, c), (b, c))，
+       *    由于Grouping sets用到了a、b和c两个字段，生成的掩码二进制为000和001，即整数0和1。
+       *
+       * 注意，在掩码生成过程中有两个规范：
+       * 1. 在grouping sets中使用到的列标记为0，未使用到的列标记为1。
+       * 2. group by中的列的顺序在掩码中是逆序的，即group by a, b，在grouping sets掩码10中意味着a被使用而b未被使用。
+       * 下面的过程就是在处理并生成标记掩码。
+       */
       val mask = (1 << numExpressions) - 1
       val masks = ctx.groupingSet.asScala.map {
         _.expression.asScala.foldLeft(mask) {
           case (bitmap, eCtx) =>
             // Find the index of the expression.
-            val e = typedVisit[Expression](eCtx)
+            val e = typedVisit[Expression](eCtx) // 解析GROUPING SETs (...) 内的列
+            /**
+             * 检查解析出的GROUPING SETs (...)列是否在GROUP BY ...的列中
+             * 也即是说在SQL：select ... from t group columns1 grouping sets (columns2) 中，
+             * columns2中的列必须存在于columns1中
+             */
             val index = expressionMap.find(_._1.semanticEquals(e)).map(_._2).getOrElse(
               throw new ParseException(
                 s"$e doesn't show up in the GROUP BY list", ctx))
             // 0 means that the column at the given index is a grouping column, 1 means it is not,
             // so we unset the bit in bitmap.
+            // 进行掩码构建
             bitmap & ~(1 << (numExpressions - 1 - index))
         }
       }
@@ -565,16 +622,24 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
   /**
    * Add a [[Generate]] (Lateral View) to a logical plan.
+   *
+   * 处理侧写表的逻辑计划，生成Generate节点
    */
   private def withGenerate(
       query: LogicalPlan,
       ctx: LateralViewContext): LogicalPlan = withOrigin(ctx) {
+    // 获取侧写的表达式，转换为List
     val expressions = expressionList(ctx.expression)
     Generate(
+      // 解析侧写生成函数名
       UnresolvedGenerator(visitFunctionName(ctx.qualifiedName), expressions),
+      // 使用Join的方式处理主数据和侧写数据
       join = true,
+      // 是否使用了LATERAL VIEW OUTER语法
       outer = ctx.OUTER != null,
+      // 侧写表名，这里进行了小写转换
       Some(ctx.tblName.getText.toLowerCase),
+      // 侧写列名，转换为UnresolvedAttribute
       ctx.colName.asScala.map(_.getText).map(UnresolvedAttribute.apply),
       query)
   }
@@ -711,6 +776,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    */
   override def visitTableValuedFunction(ctx: TableValuedFunctionContext)
       : LogicalPlan = withOrigin(ctx) {
+    // 生成UnresolvedTableValuedFunction叶子节点，第一个参数是函数名，第二个参数是函数参数列表
     UnresolvedTableValuedFunction(ctx.identifier.getText, ctx.expression.asScala.map(expression))
   }
 
@@ -718,9 +784,18 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * Create an inline table (a virtual table in Hive parlance).
    */
   override def visitInlineTable(ctx: InlineTableContext): LogicalPlan = withOrigin(ctx) {
+    /**
+     * 例如SQL：SELECT a FROM VALUES (1), (2), (3) AS data(a)，其中
+     * 1. (1), (2), (3)会被解析为ctx.expression。
+     * 2. data(a)里的data会被解析ctx.identifier。
+     * 2. data(a)里的(a)会被解析ctx.identifierList。
+     */
+
     // Get the backing expressions.
+    // 先对ctx.expression进行解析
     val rows = ctx.expression.asScala.map { e =>
-      expression(e) match {
+      val expr = expression(e)
+      expr match {
         // inline table comes in two styles:
         // style 1: values (1), (2), (3)  -- multiple columns are supported
         // style 2: values 1, 2, 3  -- only a single column is supported here
@@ -1071,7 +1146,7 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
     // Check if the function is evaluated in a windowed context.
     // 查看函数是否是作用在窗口上
     ctx.windowSpec match {
-      case spec: WindowRefContext => // 作用在窗口引用上
+      case spec: WindowRefContext => // 作用在命名窗口引用上
         UnresolvedWindowExpression(function, visitWindowRef(spec))
       case spec: WindowDefContext => // 作用在窗口定义上
         WindowExpression(function, visitWindowDef(spec))
@@ -1235,11 +1310,11 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
    * [[UnresolvedExtractValue]] if the parent is some expression.
    */
   override def visitDereference(ctx: DereferenceContext): Expression = withOrigin(ctx) {
-    val attr = ctx.fieldName.getText
-    expression(ctx.base) match {
-      case UnresolvedAttribute(nameParts) =>
+    val attr = ctx.fieldName.getText // 字段名
+    expression(ctx.base) match { // 递归解析引用名
+      case UnresolvedAttribute(nameParts) => // 父节点是UnresolvedAttribute的情况下
         UnresolvedAttribute(nameParts :+ attr)
-      case e =>
+      case e => // 父节点是其他的表达式
         UnresolvedExtractValue(e, Literal(attr))
     }
   }
@@ -1255,6 +1330,9 @@ class AstBuilder extends SqlBaseBaseVisitor[AnyRef] with Logging {
 
   /**
    * Create an [[UnresolvedExtractValue]] expression, this is used for subscript access to an array.
+   *
+   * 访问数组产生的节点，例如：select arr[0]，
+   * 其中，arr会作为ctx.value进行递归解析，而0则会作为ctx.index进行递归解析
    */
   override def visitSubscript(ctx: SubscriptContext): Expression = withOrigin(ctx) {
     UnresolvedExtractValue(expression(ctx.value), expression(ctx.index))

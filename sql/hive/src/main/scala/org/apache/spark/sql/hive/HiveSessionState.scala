@@ -86,6 +86,7 @@ private[hive] class HiveSessionState(sparkSession: SparkSession)
           DataSourceStrategy,
           DDLStrategy,
           SpecialLimits,
+          // 内存库表扫描，会涉及多对一组合转换PhysicalOperation模式的处理（匹配逻辑算子树中的Project和Filter等节点，返回投影列、过滤条件集合和子节点。）
           InMemoryScans,
           HiveTableScans, // 负责从Hive表中读取数据
           DataSinks, // 用于向Hive表中写入数据

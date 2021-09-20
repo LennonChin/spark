@@ -30,6 +30,9 @@ import org.apache.spark.sql.catalyst.expressions.Expression
 private[sql] abstract class AbstractDataType {
   /**
    * The default concrete type to use if we want to cast a null literal into this type.
+   *
+   * 当尝试转换Null为预期类型时，会转换为该方法返回的类型。
+   * 该方法由具体的子类实现。
    */
   private[sql] def defaultConcreteType: DataType
 

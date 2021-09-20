@@ -185,6 +185,9 @@ case class CreateMap(children: Seq[Expression]) extends Expression {
  * An expression representing a not yet available attribute name. This expression is unevaluable
  * and as its name suggests it is a temporary place holder until we're able to determine the
  * actual attribute name.
+ *
+ * 表示尚不可用的属性名称的表达式。
+ * 这个表达式是不可执行的的，正如它的名字所暗示的那样，它是一个临时的占位符，直到我们能够确定实际的属性名称。
  */
 case object NamePlaceholder extends LeafExpression with Unevaluable {
   override lazy val resolved: Boolean = false

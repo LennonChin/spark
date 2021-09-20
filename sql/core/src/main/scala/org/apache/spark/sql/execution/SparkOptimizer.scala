@@ -48,6 +48,8 @@ class SparkOptimizer(
      * 用来对数据文件中的分区进行剪裁操作。
      * 当数据文件中定义了分区信息且逻辑算子树中的LogicalRelation节点上方存在过滤算子时，
      * 该优化规则会尽可能地将过滤算子下推到存储层，这样可以避免读入无关的数据分区。
+     *
+     * 会涉及多对一组合转换PhysicalOperation模式的处理（匹配逻辑算子树中的Project和Filter等节点，返回投影列、过滤条件集合和子节点。）
      */
     Batch("Prune File Source Table Partitions", Once, PruneFileSourcePartitions) :+
     /**

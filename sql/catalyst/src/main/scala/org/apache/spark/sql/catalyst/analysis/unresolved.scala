@@ -193,6 +193,13 @@ case class UnresolvedGenerator(name: FunctionIdentifier, children: Seq[Expressio
     throw new UnsupportedOperationException(s"Cannot evaluate expression: $this")
 }
 
+/**
+ * 未解析的函数表达式
+ *
+ * @param name 函数标识符
+ * @param children 函数的参数构成的表达式列表
+ * @param isDistinct 函数参数是否是Distinct性质
+ */
 case class UnresolvedFunction(
     name: FunctionIdentifier,
     children: Seq[Expression],
@@ -246,12 +253,26 @@ abstract class Star extends LeafExpression with NamedExpression {
  */
 case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevaluable {
 
+  /**
+   * 该方法主要用途是根据input参数的output来展开列。
+   * UnresolvedStar类的构造参数target是用于指定具体列的归属关系（可以是表名，也可以是表的别名）。
+   * 因此存在三种情况：
+   * 1. target为空，如select * from ...，这种情况直接返回input的所有output即可。
+   * 2. target只存在一个归属关系，如select t.* from ...，这种情况就根据关系名t（可以是表名，也可以是表的别名）去匹配input中output的qualifier，
+   *     如果能匹配上，说明需要取该output的所有列。
+   * 3. target中有多个归属关系，如select t1.*, t2.* from ...，
+   *
+   * @param input
+   * @param resolver
+   * @return
+   */
   override def expand(input: LogicalPlan, resolver: Resolver): Seq[NamedExpression] = {
     // If there is no table specified, use all input attributes.
+    // 没有指定表名，直接输出input节点的所有列即可
     if (target.isEmpty) return input.output
 
     val expandedAttributes =
-      if (target.get.size == 1) {
+      if (target.get.size == 1) { // 指定了一个表名，需要从input的output找到这个表名对应的所有队列
         // If there is a table, pick out attributes that are part of this table.
         input.output.filter(_.qualifier.exists(resolver(_, target.get.head)))
       } else {
@@ -261,8 +282,13 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
 
     // Try to resolve it as a struct expansion. If there is a conflict and both are possible,
     // (i.e. [name].* is both a table and a struct), the struct path can always be qualified.
+    /**
+     * 存在多个target。
+     * 尝试将其解析为Struct扩展。 如果存在冲突并且两者都有可能，（即 [name].* 既是表又是Struct），Struct的路径总是可以被限定的。
+     */
+    // 从input中解析target
     val attribute = input.resolve(target.get, resolver)
-    if (attribute.isDefined) {
+    if (attribute.isDefined) { // 能解析为Attribute，说明其一定是一个Struct，尝试展开它
       // This target resolved to an attribute in child. It must be a struct. Expand it.
       attribute.get.dataType match {
         case s: StructType => s.zipWithIndex.map {
@@ -276,6 +302,7 @@ case class UnresolvedStar(target: Option[Seq[String]]) extends Star with Unevalu
             target.get + "`")
       }
     } else {
+      // 解析不到，报错
       val from = input.inputSet.map(_.name).mkString(", ")
       val targetString = target.get.mkString(".")
       throw new AnalysisException(s"cannot resolve '$targetString.*' give input columns '$from'")
@@ -335,8 +362,10 @@ case class ResolvedStar(expressions: Seq[NamedExpression]) extends Star with Une
  *
  * @param child The expression to extract value from,
  *              can be Map, Array, Struct or array of Structs.
+ *              用于获取值的复合结构，如Map、Array、Struct、Struct数组等
  * @param extraction The expression to describe the extraction,
  *                   can be key of Map, index of Array, field name of Struct.
+ *                   用于从复合结构中获取值的表达式，如字典的键，数组的下标，Struct的名称
  */
 case class UnresolvedExtractValue(child: Expression, extraction: Expression)
   extends UnaryExpression with Unevaluable {

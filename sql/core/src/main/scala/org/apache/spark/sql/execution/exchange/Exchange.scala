@@ -69,18 +69,25 @@ case class ReusedExchangeExec(override val output: Seq[Attribute], child: Exchan
 case class ReuseExchange(conf: SQLConf) extends Rule[SparkPlan] {
 
   def apply(plan: SparkPlan): SparkPlan = {
-    if (!conf.exchangeReuseEnabled) {
+    if (!conf.exchangeReuseEnabled) { // spark.sql.exchange.reuse
       return plan
     }
     // Build a hash map using schema of exchanges to avoid O(N*N) sameResult calls.
+    // 使用HashMap对Exchange进行散列标记
     val exchanges = mutable.HashMap[StructType, ArrayBuffer[Exchange]]()
-    plan.transformUp {
-      case exchange: Exchange =>
+    plan.transformUp { // 后序遍历所有的子节点
+      case exchange: Exchange => // 遇到Exchange节点
         // the exchanges that have same results usually also have same schemas (same column names).
+        /**
+         * 从HashMap中根据Schema查找对应的Exchange数组，如果没找到就创建一个空数组。
+         * 如果Exchange获得的结果相同，那么这些Exchange的Schema是一样（即有相同的列名）。
+         */
         val sameSchema = exchanges.getOrElseUpdate(exchange.schema, ArrayBuffer[Exchange]())
+        // 查找是否已经存在与自己语义相同的Exchange
         val samePlan = sameSchema.find { e =>
           exchange.sameResult(e)
         }
+        // 如果存在，就构建ReusedExchangeExec节点返回
         if (samePlan.isDefined) {
           // Keep the output of this exchange, the following plans require that to resolve
           // attributes.
