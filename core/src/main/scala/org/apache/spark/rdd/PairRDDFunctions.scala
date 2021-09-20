@@ -107,7 +107,7 @@ class PairRDDFunctions[K, V](self: RDD[(K, V)])
       self.context.clean(mergeCombiners))
     // 判断传入分区器是否相同
     if (self.partitioner == Some(partitioner)) {
-      // 如果分区器相同，直接使用聚集器将迭代器中的数据进行聚合，返回InterruptibleIterator迭代器
+      // 如果分区器相同，直接使用聚集器将迭代器中的数据进行聚合，使用InterruptibleIterator包装聚集操作，返回MapPartitionsRDD
       self.mapPartitions(iter => {
         val context = TaskContext.get()
         new InterruptibleIterator(context, aggregator.combineValuesByKey(iter, context))

@@ -226,6 +226,12 @@ private[spark] class ExternalSorter[K, V, C](
   private[spark] def numSpills: Int = spills.size
 
   def insertAll(records: Iterator[Product2[K, V]]): Unit = {
+    /**
+     * Aggregator的参数：
+     * - createCombiner: V => C，创建聚合的初始值。
+     * - mergeValue: (C, V) => C，用于将新的值合并到已有的聚合结果中。
+     * - mergeCombiners: (C, C) => C，合并多个聚合结果。
+     */
     // TODO: stop combining if we find that the reduction factor isn't high
     val shouldCombine = aggregator.isDefined
 

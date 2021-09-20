@@ -407,7 +407,7 @@ abstract class RDD[T: ClassTag](
       // 从检查点读取或重新尝试计算
       computeOrReadCheckpoint(partition, context)
     }) match {
-      case Left(blockResult) =>
+      case Left(blockResult) => // 从BlockManagerId中获取
         if (readCachedBlock) {
           val existingMetrics = context.taskMetrics().inputMetrics
           existingMetrics.incBytesRead(blockResult.bytes)
@@ -422,7 +422,7 @@ abstract class RDD[T: ClassTag](
           // 将返回的BlockResult的data属性封装为InterruptibleIterator
           new InterruptibleIterator(context, blockResult.data.asInstanceOf[Iterator[T]])
         }
-      case Right(iter) =>
+      case Right(iter) => // 降级从computeOrReadCheckpoint方法获取
         // 将返回的Iterator封装为InterruptibleIterator
         new InterruptibleIterator(context, iter.asInstanceOf[Iterator[T]])
     }
