@@ -320,9 +320,13 @@ object RemoveAliasOnlyProject extends Rule[LogicalPlan] {
 
 /**
  * Pushes down [[LocalLimit]] beneath UNION ALL and beneath the streamed inputs of outer joins.
+ *
+ * 在Union all中下推LocalLimit。
+ * 在Outer Join的Streamed输入侧（即保留行表侧）中下推LocalLimit。
  */
 object LimitPushDown extends Rule[LogicalPlan] {
 
+  // 对GlobalLimit节点进行退化
   private def stripGlobalLimitIfPresent(plan: LogicalPlan): LogicalPlan = {
     plan match {
       case GlobalLimit(_, child) => child
@@ -330,11 +334,20 @@ object LimitPushDown extends Rule[LogicalPlan] {
     }
   }
 
+  /**
+   * 检查并决定是否可以下推Limit
+   * @param limitExp Limit的表达式
+   * @param plan 计划节点
+   * @return 下推后的LocalLimit节点或未下推的原节点
+   */
   private def maybePushLimit(limitExp: Expression, plan: LogicalPlan): LogicalPlan = {
     (limitExp, plan.maxRows) match {
+      // Limit表达式限制的最大行，计划节点的最大行
       case (IntegerLiteral(maxRow), Some(childMaxRows)) if maxRow < childMaxRows =>
+        // 如果Limit表达式的最大行小于计划节点的最大行，可以进行Limit下推
         LocalLimit(limitExp, stripGlobalLimitIfPresent(plan))
       case (_, None) =>
+        // 计划节点不存在最大行，可以进行Limit下推
         LocalLimit(limitExp, stripGlobalLimitIfPresent(plan))
       case _ => plan
     }
@@ -347,7 +360,17 @@ object LimitPushDown extends Rule[LogicalPlan] {
     // Note: right now Union means UNION ALL, which does not de-duplicate rows, so it is safe to
     // pushdown Limit through it. Once we add UNION DISTINCT, however, we will not be able to
     // pushdown Limit.
+    /**
+     * 在UNION ALL的表中，如果没有Limit，那么可以添加额外的Limit，或者在行数较多的表的子节点上添加额外的Limit。
+     * Limit下推规则无法推断表的最大行数。
+     * 注意： 当前的Union指的是UNION ALL，即不会对重复行去重，因此对它进行Limit下推是安全的。
+     * 一旦使用了去重的UNION，将不能进行Limit下推。
+     */
     case LocalLimit(exp, Union(children)) =>
+      /**
+       * LocalLimit限制的行数比表节点限制的行数小，或者表节点没有限制行数，则可以下推
+       * 注意，下推的是一个新的LocalLimit节点，原来的Union上层的LocalLimit节点未改变。
+       */
       LocalLimit(exp, Union(children.map(maybePushLimit(exp, _))))
     // Add extra limits below OUTER JOIN. For LEFT OUTER and FULL OUTER JOIN we push limits to the
     // left and right sides, respectively. For FULL OUTER JOIN, we can only push limits to one side
@@ -358,25 +381,44 @@ object LimitPushDown extends Rule[LogicalPlan] {
     //   - If one side is already limited, stack another limit on top if the new limit is smaller.
     //     The redundant limit will be collapsed by the CombineLimits rule.
     //   - If neither side is limited, limit the side that is estimated to be bigger.
+    /**
+     * 在Outer Join下面添加额外的Limit。
+     *
+     * 对于Left outer join和Full outer join，下推Limit到左表或者右表。
+     *
+     * 对于Full outer join，只能下推到其中一侧，因为我们需要保证下推的一侧依旧能够有机会匹配来自未下推一侧的数据。
+     * 我们同时需要保证多次应该该规则时，不会导致在两侧都下推了该Limit。
+     *  - 如果一侧已经下推了Limit，如果新的Limit比较小，则在顶部新增一个新的Limit，冗余的Limit会被CombineLimits规则折叠。
+     *  - 如果两侧都没有下推Limit，就将Limit下推到评估较大的那一侧。
+     */
     case LocalLimit(exp, join @ Join(left, right, joinType, _)) =>
       val newJoin = joinType match {
+        // 尝试对右外连接的右表进行Limit下推
         case RightOuter => join.copy(right = maybePushLimit(exp, right))
+        // 尝试对左外连接的左表进行Limit下推
         case LeftOuter => join.copy(left = maybePushLimit(exp, left))
+        // Full Outer Join的情况分别讨论
         case FullOuter =>
           (left.maxRows, right.maxRows) match {
+            // 两侧表不存在最大行数限定
             case (None, None) =>
+              // 左侧表的统计数据大于等于右侧表的统计数据，对左表进行下推，否则对右表进行下推
               if (left.statistics.sizeInBytes >= right.statistics.sizeInBytes) {
                 join.copy(left = maybePushLimit(exp, left))
               } else {
                 join.copy(right = maybePushLimit(exp, right))
               }
+            // 左右表都限定了最大行数，不下推
             case (Some(_), Some(_)) => join
+            // 左表限定最大行数，右表未限定，对左表进行下推
             case (Some(_), None) => join.copy(left = maybePushLimit(exp, left))
+            // 右表限定最大行数，左表未限定，对右表进行下推。
             case (None, Some(_)) => join.copy(right = maybePushLimit(exp, right))
 
           }
         case _ => join
       }
+      // 构造新的Limit节点
       LocalLimit(exp, newJoin)
   }
 }
@@ -484,6 +526,13 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
  *   p1 @ Project(_, Filter(_, p2 @ Project(_, child))) if p2.outputSet.subsetOf(p2.inputSet)
  *
  * p2 is usually inserted by this rule and useless, p1 could prune the columns anyway.
+ *
+ * 尝试消除对查询计划中某些列的读取。
+ *
+ * 一旦在Filter之前添加Project算子会与PushPredicatesThroughProject规则冲突，本规则会移除下面模式中p2这个Project：
+ * p1 @ Project(_, Filter(_, p2 @ Project(_, child))) if p2.outputSet.subsetOf(p2.inputSet)
+ *
+ * p2通常来说是被本规则插入的，而且是没有用的，p1无论如何都可以修剪列。
  */
 object ColumnPruning extends Rule[LogicalPlan] {
   private def sameOutput(output1: Seq[Attribute], output2: Seq[Attribute]): Boolean =
@@ -492,18 +541,30 @@ object ColumnPruning extends Rule[LogicalPlan] {
 
   def apply(plan: LogicalPlan): LogicalPlan = removeProjectBeforeFilter(plan transform {
     // Prunes the unused columns from project list of Project/Aggregate/Expand
+    // 从Project列表中移除无用的Project / Aggregate / Expand算子
+
+    // 子节点p2的输出列包含p节点使用以外的列
     case p @ Project(_, p2: Project) if (p2.outputSet -- p.references).nonEmpty =>
+      // 对p2节点的Project List进行裁剪，保留只在p节点中用到的列
       p.copy(child = p2.copy(projectList = p2.projectList.filter(p.references.contains)))
+
+    // 子节点a的输出列包含p节点使用以外的列
     case p @ Project(_, a: Aggregate) if (a.outputSet -- p.references).nonEmpty =>
+      // 对a节点的聚合列进行裁剪，保留只在p节点中用到的列
       p.copy(
         child = a.copy(aggregateExpressions = a.aggregateExpressions.filter(p.references.contains)))
+
+    // 子节点e的输出列包含p节点使用以外的列
     case a @ Project(_, e @ Expand(_, _, grandChild)) if (e.outputSet -- a.references).nonEmpty =>
+      // 裁剪输出列为仅p节点需要的列
       val newOutput = e.output.filter(a.references.contains(_))
+      // 需要对Expand节点中所有的列选择表达式裁剪为仅p节点需要的列
       val newProjects = e.projections.map { proj =>
         proj.zip(e.output).filter { case (_, a) =>
           newOutput.contains(a)
         }.unzip._1
       }
+      // 重新构造Expand节点
       a.copy(child = Expand(newProjects, newOutput, grandChild))
 
     // Prunes the unused columns from child of `DeserializeToObject`
@@ -525,6 +586,7 @@ object ColumnPruning extends Rule[LogicalPlan] {
 
     // Eliminate unneeded attributes from right side of a Left Existence Join.
     case j @ Join(_, right, LeftExistence(_), _) =>
+      // 裁剪右表汇总无用的列
       j.copy(right = prunedChild(right, j.references))
 
     // all the columns will be used to compare, so we can't prune them
@@ -532,38 +594,49 @@ object ColumnPruning extends Rule[LogicalPlan] {
     case p @ Project(_, _: Distinct) => p
     // Eliminate unneeded attributes from children of Union.
     case p @ Project(_, u: Union) =>
+      // 子节点u的输出列包含p节点使用以外的列，说明u的输出列需要被裁剪
       if ((u.outputSet -- p.references).nonEmpty) {
+        // 获取Union第一个表
         val firstChild = u.children.head
+        // 对第一个表进行裁剪，得到裁剪后的列
         val newOutput = prunedChild(firstChild, p.references).output
         // pruning the columns of all children based on the pruned first child.
+        // 根据上面的裁剪后的结果列对Union的每个表进行裁剪，对每个表都生成一个Project父节点
         val newChildren = u.children.map { p =>
           val selected = p.output.zipWithIndex.filter { case (a, i) =>
             newOutput.contains(firstChild.output(i))
           }.map(_._1)
           Project(selected, p)
         }
+        // 用裁剪后的表集合替换Union中的表集合
         p.copy(child = u.withNewChildren(newChildren))
       } else {
         p
       }
 
     // Prune unnecessary window expressions
+    // 子节点w的输出列包含p节点使用以外的列，说明u的输出列需要被裁剪
     case p @ Project(_, w: Window) if (w.windowOutputSet -- p.references).nonEmpty =>
       p.copy(child = w.copy(
         windowExpressions = w.windowExpressions.filter(p.references.contains)))
 
     // Eliminate no-op Window
+    // 无开窗操作的Window节点，直接替换为它的子节点
     case w: Window if w.windowExpressions.isEmpty => w.child
 
     // Eliminate no-op Projects
+    // 如果Project节点没有做有效的裁剪，直接替换为子节点即可
     case p @ Project(_, child) if sameOutput(child.output, p.output) => child
 
     // Can't prune the columns on LeafNode
+    // 叶子节点无法裁剪
     case p @ Project(_, _: LeafNode) => p
 
     // for all other logical plans that inherits the output from it's children
     case p @ Project(_, child) =>
+      // Project与子节点的表达式属性的合并
       val required = child.references ++ p.references
+      // 如果子节点的输入列中有合并列集合以外的列，说明该子节点是可以被裁剪的
       if ((child.inputSet -- required).nonEmpty) {
         val newChildren = child.children.map(c => prunedChild(c, required))
         p.copy(child = child.withNewChildren(newChildren))
@@ -574,7 +647,9 @@ object ColumnPruning extends Rule[LogicalPlan] {
 
   /** Applies a projection only when the child is producing unnecessary attributes */
   private def prunedChild(c: LogicalPlan, allReferences: AttributeSet) =
+    // allReferences中包含c的输出列
     if ((c.outputSet -- allReferences.filter(c.outputSet.contains)).nonEmpty) {
+      // 在c的上层构建一个Project，对c的列进行裁剪，只保留allReferences用到的列
       Project(c.output.filter(allReferences.contains), c)
     } else {
       c
@@ -834,6 +909,10 @@ object PruneFilters extends Rule[LogicalPlan] with PredicateHelper {
  * 2) the predicate is deterministic and the operator will not change any of rows.
  *
  * This heuristic is valid assuming the expression evaluation cost is minimal.
+ *
+ * 当且仅当满足下面的条件时，将Filter节点进行下推：
+ * 1. 操作是确定的。
+ * 2. 下推是确定的，且操作不会改变任何行数据。
  */
 object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
@@ -842,15 +921,28 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // implies that, for a given input row, the output are determined by the expression's initial
     // state and all the input rows processed before. In another word, the order of input rows
     // matters for non-deterministic expressions, while pushing down predicates changes the order.
+    /**
+     * SPARK-13473: 当底层Projection的输出不确定时，不能进行下推。
+     * 未确定的表达式在本质上是有状态的。这表明，给定输入行，输出是取决于表达式的初始状态和之前处理的所有输入行决定。
+     * 换句话说，输入行的顺序对于未确定的表达式很重要，而下推谓词会改变顺序。
+     */
+    // 匹配子节点为Project的Filter算子
     case filter @ Filter(condition, project @ Project(fields, grandChild))
+      /**
+       * 1. Project的输出列表达式都是确定的。
+       * 2. Filter的条件输出列与Project子节点的输出列没有关联。
+       */
       if fields.forall(_.deterministic) && canPushThroughCondition(grandChild, condition) =>
 
       // Create a map of Aliases to their values from the child projection.
       // e.g., 'SELECT a + b AS c, d ...' produces Map(c -> a + b).
+      // 将Project中的别名映射为具体的列，构建映射Map，
+      // 例如SQL：SELECT a + b AS c, d ... 会产生Map(c, -> a + b)
       val aliasMap = AttributeMap(fields.collect {
         case a: Alias => (a.toAttribute, a.child)
       })
 
+      // 创建Filter时要将别名替换为真实的列，否则无法计算
       project.copy(child = Filter(replaceAlias(condition, aliasMap), grandChild))
 
     // Push [[Filter]] operators through [[Window]] operators. Parts of the predicate that can be
@@ -858,30 +950,50 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // 1. All the expressions are part of window partitioning key. The expressions can be compound.
     // 2. Deterministic.
     // 3. Placed before any non-deterministic predicates.
+    /**
+     * 对于Window操作的Filter，部分谓词可以被下推，但需要满足下面的条件：
+     * 1. 所有的表达式都是Window操作的Partition Key，表达式可以是复合的。
+     * 2. 谓词表达式是确定的。
+     * 3. 这些谓词的位置必须是在其他非确定性谓词之前。
+     */
     case filter @ Filter(condition, w: Window)
         if w.partitionSpec.forall(_.isInstanceOf[AttributeReference]) =>
+      // 获得Window操作的中Partition的所有列
       val partitionAttrs = AttributeSet(w.partitionSpec.flatMap(_.references))
 
+      // 将Filter的谓词条件分为确定的（candidates）和未确定的（containingNonDeterministic）
       val (candidates, containingNonDeterministic) =
         splitConjunctivePredicates(condition).span(_.deterministic)
 
+      // 从确定的谓词中，根据Window Partition Key列找到可以下推的谓词
       val (pushDown, rest) = candidates.partition { cond =>
         cond.references.subsetOf(partitionAttrs)
       }
 
+      // 合并剩余的谓词
       val stayUp = rest ++ containingNonDeterministic
 
       if (pushDown.nonEmpty) {
+        // 可下推谓词不为空，根据下推谓词创建新的Filter，并将Filter下推为Window节点的子节点
         val pushDownPredicate = pushDown.reduce(And)
         val newWindow = w.copy(child = Filter(pushDownPredicate, w.child))
+        // 如果还有剩余谓词，就在Window节点上根据这些谓词创建Filter节点，否则直接返回
         if (stayUp.isEmpty) newWindow else Filter(stayUp.reduce(And), newWindow)
       } else {
+        // 无可下推的谓词，直接返回
         filter
       }
 
+    // Aggregate操作的Filter
     case filter @ Filter(condition, aggregate: Aggregate) =>
       // Find all the aliased expressions in the aggregate list that don't include any actual
       // AggregateExpression, and create a map from the alias to the expression
+      /**
+       * 查找聚合列表中所有不包含任何实际聚合表达式的别名表达式，并创建从别名到表达式的映射。
+       * 例如SQL：
+       * select category as c, sum(a) as s from t group by category
+       * 符合条件的就只有 category as c，而 sum(a) as s 是聚合表达式，最终得到的结果是(c#id, country#id)
+       */
       val aliasMap = AttributeMap(aggregate.aggregateExpressions.collect {
         case a: Alias if a.child.find(_.isInstanceOf[AggregateExpression]).isEmpty =>
           (a.toAttribute, a.child)
@@ -889,54 +1001,77 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
 
       // For each filter, expand the alias and check if the filter can be evaluated using
       // attributes produced by the aggregate operator's child operator.
+      // 将Filter中的过滤谓词分为确定的（candidates）和未确定的（containingNonDeterministic）
       val (candidates, containingNonDeterministic) =
         splitConjunctivePredicates(condition).span(_.deterministic)
 
+      // 对于每个谓词条件，展开别名并检查是否可以使用由聚合运算符的子运算符生成的属性来评估过滤器。
       val (pushDown, rest) = candidates.partition { cond =>
+        // 根据谓词中的列名，去筛选出的别名中查找，得到具体的列名，查找不到说明谓词中使用的就是列名
         val replaced = replaceAlias(cond, aliasMap)
+        // 谓词中的列名不为空，列名是聚合操作输出列的子集，说明该谓词可以下推的。
         cond.references.nonEmpty && replaced.references.subsetOf(aggregate.child.outputSet)
       }
 
+      // 合并剩余的谓词
       val stayUp = rest ++ containingNonDeterministic
 
       if (pushDown.nonEmpty) {
+        // 如果可下推的谓词不为空，则将以这些谓词构建Filter下推作为新Aggregate的子节点
         val pushDownPredicate = pushDown.reduce(And)
         val replaced = replaceAlias(pushDownPredicate, aliasMap)
         val newAggregate = aggregate.copy(child = Filter(replaced, aggregate.child))
         // If there is no more filter to stay up, just eliminate the filter.
         // Otherwise, create "Filter(stayUp) <- Aggregate <- Filter(pushDownPredicate)".
+        // 如果还剩余有无法下推的谓词，就创建新的Filter节点，将新的Aggregate节点作为子节点，否则直接返回新的Aggregate节点
         if (stayUp.isEmpty) newAggregate else Filter(stayUp.reduce(And), newAggregate)
       } else {
+        // 没有可下推的谓词，直接返回
         filter
       }
 
+    // Union操作的Filter
     case filter @ Filter(condition, union: Union) =>
       // Union could change the rows, so non-deterministic predicate can't be pushed down
+      // 将Filter中的过滤谓词分为确定的（pushDown）和未确定的（stayUp）
       val (pushDown, stayUp) = splitConjunctivePredicates(condition).span(_.deterministic)
 
       if (pushDown.nonEmpty) {
+        // 存在可下推的谓词
+        // 将可下推的谓词组合为And节点
         val pushDownCond = pushDown.reduceLeft(And)
+        // Union操作的输出列
         val output = union.output
+
+        // 遍历Union操作的每个表
         val newGrandChildren = union.children.map { grandchild =>
+          // 从下推条件中进行过滤，得到涉及Union输出列的谓词条件
           val newCond = pushDownCond transform {
             case e if output.exists(_.semanticEquals(e)) =>
               grandchild.output(output.indexWhere(_.semanticEquals(e)))
           }
           assert(newCond.references.subsetOf(grandchild.outputSet))
+          // 以过滤得到的谓词条件构造新的Filter节点，下推为Union的表节点父节点
           Filter(newCond, grandchild)
         }
+        // 使用下推谓词后的表节点构造新的Union节点
         val newUnion = union.withNewChildren(newGrandChildren)
         if (stayUp.nonEmpty) {
+          // 如果还有剩余谓词，就构造为Filter节点，将新的Union节点作为该Filter节点的子节点
           Filter(stayUp.reduceLeft(And), newUnion)
         } else {
+          // 没有剩余谓词，直接返回新的Union节点
           newUnion
         }
       } else {
+        // 没有可下推的谓词，直接返回
         filter
       }
 
     case filter @ Filter(condition, u: UnaryNode)
+      // 所有表达式需要是确定的，且只有部分节点可以被下推
         if canPushThrough(u) && u.expressions.forall(_.deterministic) =>
+      // 进行谓词下推
       pushDownPredicate(filter, u.child) { predicate =>
         u.withNewChildren(Seq(Filter(predicate, u.child)))
       }
@@ -964,23 +1099,31 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
     // come from grandchild.
     // TODO: non-deterministic predicates could be pushed through some operators that do not change
     // the rows.
+    // 将Filter中的过滤谓词分为确定的（candidates）和未确定的（containingNonDeterministic）
     val (candidates, containingNonDeterministic) =
       splitConjunctivePredicates(filter.condition).span(_.deterministic)
 
+    // 找出与子节点输出列相关的确定性谓词
     val (pushDown, rest) = candidates.partition { cond =>
       cond.references.subsetOf(grandchild.outputSet)
     }
 
+    // 合并剩余的谓词
     val stayUp = rest ++ containingNonDeterministic
 
     if (pushDown.nonEmpty) {
+      // 如果存在可下推的谓词
+      // 将下推谓词合并为And节点
       val newChild = insertFilter(pushDown.reduceLeft(And))
       if (stayUp.nonEmpty) {
+        // 如果还剩余有谓词，将构造为单独的Filter节点，然后将已下推生成的节点作为Filter的子节点
         Filter(stayUp.reduceLeft(And), newChild)
       } else {
+        // 没有剩余谓词，直接返回已下推生成的节点
         newChild
       }
     } else {
+      // 没有可下推的谓词，直接返回
       filter
     }
   }
@@ -989,10 +1132,18 @@ object PushDownPredicate extends Rule[LogicalPlan] with PredicateHelper {
    * Check if we can safely push a filter through a projection, by making sure that predicate
    * subqueries in the condition do not contain the same attributes as the plan they are moved
    * into. This can happen when the plan and predicate subquery have the same source.
+   *
+   * 通过确保条件中的谓词子查询不包含与它们移动到的计划相同的属性，检查我们是否可以安全地通过Project下推Filter。
+   * 当plan和谓词子查询具有相同的源时，就会发生这种情况。
    */
   private def canPushThroughCondition(plan: LogicalPlan, condition: Expression): Boolean = {
     val attributes = plan.outputSet
     val matched = condition.find {
+      /**
+       * 谓词子查询的输出与传入参数plan的输出存在交集时返回true，
+       * PredicateSubquery通常存在于In和Exists操作，它的第一个参数即是In / Exists (...) 后面候选数据的子查询计划。
+       * 如果该case分支返回true，说明传入参数plan中与子查询内的输出有关联。
+       */
       case PredicateSubquery(p, _, _, _) => p.outputSet.intersect(attributes).nonEmpty
       case _ => false
     }
