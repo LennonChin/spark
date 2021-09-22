@@ -30,6 +30,10 @@ import org.apache.spark.sql.catalyst.rules._
  * one condition.
  *
  * The order of joins will not be changed if all of them already have at least one condition.
+ *
+ * 对Join操作重排序，并且下推所有的条件到Join，因此底下的Join最少有一个条件。
+ *
+ * 如果所有的Join拥有至少一个条件，那么Join的顺序不会改变。
  */
 object ReorderJoin extends Rule[LogicalPlan] with PredicateHelper {
 
@@ -38,6 +42,9 @@ object ReorderJoin extends Rule[LogicalPlan] with PredicateHelper {
    *
    * The joined plan are picked from left to right, prefer those has at least one join condition.
    *
+   * 将给定的计划节点Join在一起，并且把过滤条件下推给他们。
+   * Join连接的节点是从左往右依次进行的，最好至少有一个Join条件。
+   *
    * @param input a list of LogicalPlans to inner join and the type of inner join.
    * @param conditions a list of condition for join.
    */
@@ -45,47 +52,70 @@ object ReorderJoin extends Rule[LogicalPlan] with PredicateHelper {
   def createOrderedJoin(input: Seq[(LogicalPlan, InnerLike)], conditions: Seq[Expression])
     : LogicalPlan = {
     assert(input.size >= 2)
-    if (input.size == 2) {
+    if (input.size == 2) { // 只处理两个节点
+      // 将过滤条件根据是否关联子查询来进行分为没有关联子查询的过滤条件（joinConditions）和有关联子查询的过滤条件（others）
       val (joinConditions, others) = conditions.partition(
         e => !SubqueryExpression.hasCorrelatedSubquery(e))
+
+      // 提取左右节点
       val ((left, leftJoinType), (right, rightJoinType)) = (input(0), input(1))
+
+      // 左右都是Inner Join，得到的也是Inner Join，其他情况得到的是Cross Join
       val innerJoinType = (leftJoinType, rightJoinType) match {
         case (Inner, Inner) => Inner
         case (_, _) => Cross
       }
+
+      // 使用没有关联子查询的过滤条件（joinConditions）重新构造Join节点
       val join = Join(left, right, innerJoinType, joinConditions.reduceLeftOption(And))
       if (others.nonEmpty) {
+        // 如果还有剩余过滤条件，在新构造的Join节点上构造Filter节点
         Filter(others.reduceLeft(And), join)
       } else {
         join
       }
-    } else {
+    } else { // 处理多余两个节点
+      // 取出头节点作为左节点
       val (left, _) :: rest = input.toList
       // find out the first join that have at least one join condition
+      // 从剩余的Join中找到与left节点有至少一个公共Join条件的节点
       val conditionalJoin = rest.find { planJoinPair =>
         val plan = planJoinPair._1
+        // 合并left和plan的输出，用于公共过滤条件是否存在的判别
         val refs = left.outputSet ++ plan.outputSet
         conditions
+          // 过滤掉只作用到left节点上的条件
           .filterNot(l => l.references.nonEmpty && canEvaluate(l, left))
+          // 过滤掉只作用到plan节点上的条件
           .filterNot(r => r.references.nonEmpty && canEvaluate(r, plan))
+          // 存在可以同时作用到left和plan节点上的条件
           .exists(_.references.subsetOf(refs))
       }
       // pick the next one if no condition left
+      // 没有找到可以与left进行Join的节点，就直接用剩余节点中的第一个
       val (right, innerJoinType) = conditionalJoin.getOrElse(rest.head)
 
+      // 得到左右节点的输出列
       val joinedRefs = left.outputSet ++ right.outputSet
+      // 从过滤条件中是否关联子查询、是否列属性与左右节点输出列有关联，过滤出一批可用的Join条件（joinConditions）和不可用的（others）
       val (joinConditions, others) = conditions.partition(
         e => e.references.subsetOf(joinedRefs) && !SubqueryExpression.hasCorrelatedSubquery(e))
+      // 根据新的左右节点、Join条件构造新的Join节点
       val joined = Join(left, right, innerJoinType, joinConditions.reduceLeftOption(And))
 
       // should not have reference to same logical plan
+      // 递归处理，直到剩余两个节点时会走另一个if分支，返回Filter或Join节点
       createOrderedJoin(Seq((joined, Inner)) ++ rest.filterNot(_._1 eq right), others)
     }
   }
 
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // 匹配ExtractFiltersAndInnerJoins，该对象会匹配Filter或Inner Join，
+    // 其中input是多层Inner Join中的所有参与Join的子节点，conditions是Filter和Join中所有的过滤条件。
     case j @ ExtractFiltersAndInnerJoins(input, conditions)
+        // 参与Join的表大于2且存在过滤条件
         if input.size > 2 && conditions.nonEmpty =>
+      // 进行Join重排序
       createOrderedJoin(input, conditions)
   }
 }

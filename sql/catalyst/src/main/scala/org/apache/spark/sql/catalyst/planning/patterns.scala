@@ -161,6 +161,14 @@ object ExtractEquiJoinKeys extends Logging with PredicateHelper {
  *   plan0    plan1
  *
  * Note: This pattern currently only works for left-deep trees.
+ *
+ * 用于收集Filter和Inner Join的模式。
+ * 注意：这个模式目前只对左深树有效。
+ *
+ * 在上面的图例中可以得知：
+ * - plan0和plan1之间的Inner Join上层有Filter。
+ * - plan2和上一步得到的Filter之间的Inner Join有上层Filter。
+ * 因此可以收集到plan0、plan1、plan2三个节点，以及两个Filter中的条件
  */
 object ExtractFiltersAndInnerJoins extends PredicateHelper {
 
@@ -169,24 +177,37 @@ object ExtractFiltersAndInnerJoins extends PredicateHelper {
    * Return a list of logical plans to be joined with a boolean for each plan indicating if it
    * was involved in an explicit cross join. Also returns the entire list of join conditions for
    * the left-deep tree.
+   *
+   * @param plan 匹配的计划节点
+   * @param parentJoinType 父Join类型
+   * @return 格式为(Seq((node of join, parent join type), ...), Seq(filter conditions), ...)
    */
   def flattenJoin(plan: LogicalPlan, parentJoinType: InnerLike = Inner)
       : (Seq[(LogicalPlan, InnerLike)], Seq[Expression]) = plan match {
+
+    // 传入的plan是Inner Join
     case Join(left, right, joinType: InnerLike, cond) =>
+      // 递归处理Inner Join的左子节点（即左树）
       val (plans, conditions) = flattenJoin(left, joinType)
       (plans ++ Seq((right, joinType)), conditions ++ cond.toSeq)
 
+    // 传入的plan是Filter
     case Filter(filterCondition, j @ Join(left, right, _: InnerLike, joinCondition)) =>
+      // 递归处理Inner Join的左子节点（即左树）
       val (plans, conditions) = flattenJoin(j)
+      // 过滤条件里加入了Filter的条件
       (plans, conditions ++ splitConjunctivePredicates(filterCondition))
 
+    // 其他情况，不做处理直接返回结果。
     case _ => (Seq((plan, parentJoinType)), Seq())
   }
 
   def unapply(plan: LogicalPlan): Option[(Seq[(LogicalPlan, InnerLike)], Seq[Expression])]
       = plan match {
+    // 遇到子节点是Inner Join的Filter节点
     case f @ Filter(filterCondition, j @ Join(_, _, joinType: InnerLike, _)) =>
       Some(flattenJoin(f))
+    // 遇到Join节点
     case j @ Join(_, _, joinType, _) =>
       Some(flattenJoin(j))
     case _ => None
