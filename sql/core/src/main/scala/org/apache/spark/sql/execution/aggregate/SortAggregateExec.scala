@@ -29,6 +29,16 @@ import org.apache.spark.util.Utils
 
 /**
  * Sort-based aggregate operator.
+ *
+ * 基于Sort的聚合操作。
+ *
+ * @param requiredChildDistributionExpressions 要求子节点的数据分布
+ * @param groupingExpressions 分组表达式列表
+ * @param aggregateExpressions 聚合表达式列表
+ * @param aggregateAttributes 聚合属性列表
+ * @param initialInputBufferOffset 初始化的InputBufferOffset
+ * @param resultExpressions 结果表达式列表
+ * @param child 子节点
  */
 case class SortAggregateExec(
     requiredChildDistributionExpressions: Option[Seq[Expression]],
@@ -44,11 +54,13 @@ case class SortAggregateExec(
     aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
   }
 
+  // 节点产生的属性
   override def producedAttributes: AttributeSet =
     AttributeSet(aggregateAttributes) ++
       AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
       AttributeSet(aggregateBufferAttributes)
 
+  // 构造度量字典
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
@@ -57,6 +69,8 @@ case class SortAggregateExec(
   override def requiredChildDistribution: List[Distribution] = {
     requiredChildDistributionExpressions match {
       case Some(exprs) if exprs.isEmpty => AllTuples :: Nil
+
+      // 存在要求子节点的数据分布时，使用ClusteredDistribution
       case Some(exprs) if exprs.nonEmpty => ClusteredDistribution(exprs) :: Nil
       case None => UnspecifiedDistribution :: Nil
     }
@@ -68,24 +82,30 @@ case class SortAggregateExec(
     groupingExpressions.map(SortOrder(_, Ascending)) :: Nil
   }
 
+  // 输出分区就是子节点的输出分区
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
+  // 输出数据排序是有序的
   override def outputOrdering: Seq[SortOrder] = {
     groupingExpressions.map(SortOrder(_, Ascending))
   }
 
   protected override def doExecute(): RDD[InternalRow] = attachTree(this, "execute") {
+    // 创建long型的度量值numOutputRows
     val numOutputRows = longMetric("numOutputRows")
-    child.execute().mapPartitionsInternal { iter =>
+
+    // 执行子节点，以获取分区数据迭代器
+    child.execute().mapPartitionsInternal { iter => // 每一个迭代器都是一个分区
       // Because the constructor of an aggregation iterator will read at least the first row,
       // we need to get the value of iter.hasNext first.
       val hasInput = iter.hasNext
       if (!hasInput && groupingExpressions.nonEmpty) {
         // This is a grouped aggregate and the input iterator is empty,
         // so return an empty iterator.
+        // 如果子节点没有输出数据，直接返回空迭代器
         Iterator[UnsafeRow]()
       } else {
-        // 聚合迭代器
+        // 子节点输出了数据，返回基于Sort的聚合迭代器
         val outputIter = new SortBasedAggregationIterator(
           groupingExpressions,
           child.output,
@@ -100,6 +120,8 @@ case class SortAggregateExec(
         if (!hasInput && groupingExpressions.isEmpty) {
           // There is no input and there is no grouping expressions.
           // We need to output a single row as the output.
+
+          // 如果没有分组表达式，则不用聚合直接输出即可，否则返回迭代器
           numOutputRows += 1
           Iterator[UnsafeRow](outputIter.outputForEmptyGroupingKeyWithoutInput())
         } else {

@@ -34,10 +34,13 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
   override def toString: String = s"input[$ordinal, ${dataType.simpleString}, $nullable]"
 
   // Use special getter for primitive types (for UnsafeRow)
+  // 根据索引从InternalRow行数据中查找对应索引位的列数据
   override def eval(input: InternalRow): Any = {
     if (input.isNullAt(ordinal)) {
+      // 找不到对应的列，返回null
       null
     } else {
+      // 能找到对应的列，根据类型和索引进行获取
       dataType match {
         case BooleanType => input.getBoolean(ordinal)
         case ByteType => input.getByte(ordinal)
@@ -58,17 +61,28 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
     }
   }
 
+  // Code generate
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 列数据类型对应的Java类型
     val javaType = ctx.javaType(dataType)
+
+    // 获取列值
     val value = ctx.getValue(ctx.INPUT_ROW, dataType, ordinal.toString)
+
     if (ctx.currentVars != null && ctx.currentVars(ordinal) != null) {
       val oev = ctx.currentVars(ordinal)
-      ev.isNull = oev.isNull
-      ev.value = oev.value
+      ev.isNull = oev.isNull // 是否可为空的标记字段名称
+      ev.value = oev.value // 列值的字段名称
       val code = oev.code
       oev.code = ""
       ev.copy(code = code)
     } else if (nullable) {
+      /**
+       * 列值可为null，需要进行null值的判断。
+       * 例如对于BindReference(2, String, true)，生成的代码如下：
+       * boolean evIsnull = inputRow.isNullAt(ordinal);
+       * String evValue = evIsnull ? "null" : evValue;
+       */
       ev.copy(code = s"""
         boolean ${ev.isNull} = ${ctx.INPUT_ROW}.isNullAt($ordinal);
         $javaType ${ev.value} = ${ev.isNull} ? ${ctx.defaultValue(dataType)} : ($value);""")
@@ -80,6 +94,21 @@ case class BoundReference(ordinal: Int, dataType: DataType, nullable: Boolean)
 
 object BindReferences extends Logging {
 
+  /**
+   * 该操作主要用于将参数expression中涉及列与input参数中对应的属性进行绑定。
+   * 比如input参数表示 [a: Int, b: String, c: Decimal] 三个属性，而expression中用到了b属性，且b不为空，
+   * 那么会生成 BoundReference(1, String, false) 返回，
+   * 其中1表示expression中b在input中索引是1，String表示b的类型，false表示b不能为空。
+   *
+   * allowFailures参数用于控制没有找到的情况下如何处理，
+   * 如果为true就直接返回原来的expression，否则输出错误日志。
+   *
+   * @param expression
+   * @param input
+   * @param allowFailures
+   * @tparam A
+   * @return
+   */
   def bindReference[A <: Expression](
       expression: A,
       input: AttributeSeq,

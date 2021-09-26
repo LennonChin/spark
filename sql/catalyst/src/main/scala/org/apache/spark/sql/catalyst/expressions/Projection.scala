@@ -85,12 +85,14 @@ case class InterpretedMutableProjection(expressions: Seq[Expression]) extends Mu
 
   override def apply(input: InternalRow): InternalRow = {
     var i = 0
+    // 先将值插入到Buffer中，用于聚合
     while (i < exprArray.length) {
       // Store the result into buffer first, to make the projection atomic (needed by aggregation)
       buffer(i) = exprArray(i).eval(input)
       i += 1
     }
     i = 0
+    // 再插入到mutableRow中
     while (i < exprArray.length) {
       mutableRow(i) = buffer(i)
       i += 1
@@ -125,6 +127,11 @@ object UnsafeProjection {
    */
   def create(exprs: Seq[Expression]): UnsafeProjection = {
     val unsafeExprs = exprs.map(_ transform {
+      /**
+       * 检查是否有NamedStruct类型的，需要进行进行Unsafe转换。
+       * NamedStruct一般是从 `_FUNC_(name1, val1, name2, val2, ...)` 演变为：
+       * `{name1: val1, name2: val2, ....}` 生成的新表达式
+       */
       case CreateNamedStruct(children) => CreateNamedStructUnsafe(children)
     })
     GenerateUnsafeProjection.generate(unsafeExprs)
@@ -137,7 +144,9 @@ object UnsafeProjection {
    * `inputSchema`.
    */
   def create(exprs: Seq[Expression], inputSchema: Seq[Attribute]): UnsafeProjection = {
-    create(exprs.map(BindReferences.bindReference(_, inputSchema)))
+    create(
+      exprs.map(BindReferences.bindReference(_, inputSchema)) // 将所有的Expression映射成BindReference
+    )
   }
 
   /**

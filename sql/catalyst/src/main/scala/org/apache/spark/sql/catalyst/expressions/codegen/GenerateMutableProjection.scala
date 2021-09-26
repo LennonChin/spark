@@ -28,6 +28,10 @@ abstract class BaseMutableProjection extends MutableProjection
  * input [[InternalRow]] for a fixed set of [[Expression Expressions]].
  * It exposes a `target` method, which is used to set the row that will be updated.
  * The internal [[InternalRow]] object created internally is used only when `target` is not used.
+ *
+ * 生成字节码用于产生一个 [[org.apache.spark.sql.catalyst.InternalRow]] 对象，可以基于给定的表达式集合用新输入的InternalRow来更新自己的值。
+ * 它向外提供了一个`target`方法，可以用于设置可用于更新的行。
+ * 在target没有被调用的，会自己创建内部的 [[org.apache.spark.sql.catalyst.InternalRow]] 对象。
  */
 object GenerateMutableProjection extends CodeGenerator[Seq[Expression], MutableProjection] {
 
@@ -107,6 +111,7 @@ object GenerateMutableProjection extends CodeGenerator[Seq[Expression], MutableP
 
         public SpecificMutableProjection(Object[] references) {
           this.references = references;
+          // 初始化时就自己创建了InternalRow
           mutableRow = new $genericMutableRowType(${expressions.size});
           ${ctx.initMutableStates()}
         }
@@ -118,6 +123,7 @@ object GenerateMutableProjection extends CodeGenerator[Seq[Expression], MutableP
         ${ctx.declareAddedFunctions()}
 
         public ${classOf[BaseMutableProjection].getName} target(InternalRow row) {
+          // 外界调用target方法会更新InternalRow会外界传入的
           mutableRow = row;
           return this;
         }

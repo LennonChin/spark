@@ -88,7 +88,9 @@ package object expressions  {
   abstract class MutableProjection extends Projection {
     def currentValue: InternalRow
 
-    /** Uses the given row to store the output of the projection. */
+    /** Uses the given row to store the output of the projection.
+     * 用给定的row来存储Projection的输出结果
+     **/
     def target(row: InternalRow): MutableProjection
   }
 

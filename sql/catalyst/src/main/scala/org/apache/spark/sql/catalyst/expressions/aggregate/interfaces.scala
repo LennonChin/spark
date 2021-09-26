@@ -76,23 +76,30 @@ object AggregateExpression {
       aggregateFunction,
       mode,
       isDistinct,
-      NamedExpression.newExprId)
+      NamedExpression.newExprId) // ID默认全局自增
   }
 }
 
 /**
  * A container for an [[AggregateFunction]] with its [[AggregateMode]] and a field
  * (`isDistinct`) indicating if DISTINCT keyword is specified for this function.
+ *
+ * @param aggregateFunction 聚合操作的函数
+ * @param mode 聚合模式，有Partial、PartialMerge、Final、Complete四种
+ * @param isDistinct 是否去重
+ * @param resultId 结果ID
  */
 case class AggregateExpression(
     aggregateFunction: AggregateFunction,
-    mode: AggregateMode,
+    mode: AggregateMode, // Partial、PartialMerge、Final、Complete
     isDistinct: Boolean,
     resultId: ExprId)
   extends Expression
-  with Unevaluable {
+  with Unevaluable { // 不可执行的节点
 
+  // 结果属性
   lazy val resultAttribute: Attribute = if (aggregateFunction.resolved) {
+    // 如果聚合函数已经被解析了，就返回AttributeReference
     AttributeReference(
       aggregateFunction.toString,
       aggregateFunction.dataType,
@@ -101,6 +108,7 @@ case class AggregateExpression(
     // This is a bit of a hack.  Really we should not be constructing this container and reasoning
     // about datatypes / aggregation mode until after we have finished analysis and made it to
     // planning.
+    // 否则返回UnresolvedAttribute
     UnresolvedAttribute(aggregateFunction.toString)
   }
 
@@ -113,8 +121,14 @@ case class AggregateExpression(
       ExprId(0))
 
   override def children: Seq[Expression] = aggregateFunction :: Nil
+
+  // 数据类型是由聚合函数决定的
   override def dataType: DataType = aggregateFunction.dataType
+
+  // 不可折叠
   override def foldable: Boolean = false
+
+  // 是否可为空取决于聚合函数
   override def nullable: Boolean = aggregateFunction.nullable
 
   override def references: AttributeSet = {
@@ -154,6 +168,11 @@ case class AggregateExpression(
  *
  * Code which accepts [[AggregateFunction]] instances should be prepared to handle both types of
  * aggregate functions.
+ *
+ * AggregateFunction是两个聚合函数接口的父类
+ * - ImperativeAggregate：需要显式地实现initialize、update和merge方法来操作聚合缓冲区中的数据。
+ *                        ImperativeAggregate聚合函数所处理的聚合缓冲区本质上是基于行（InternalRow类型）的。
+ * - DeclarativeAggregate：直接由Catalyst中的表达式（Expressions）构建的聚合函数
  */
 sealed abstract class AggregateFunction extends Expression with ImplicitCastInputTypes {
 
@@ -356,6 +375,14 @@ abstract class ImperativeAggregate extends AggregateFunction with CodegenFallbac
  * we create this function in DataFrame API). So, if there is any fields in
  * the implemented class that need to access fields of its children, please make
  * those fields `lazy val`s.
+ *
+ * 用 Catalyst 表达式表示的聚合函数的 API。
+ *
+ * 当实现一个新的基于表达式的聚合函数时，首先实现 `bufferAttributes`，为可变聚合缓冲区的字段定义属性。
+ * 然后，可以在定义 `updateExpressions`、`mergeExpressions` 和 `evaluateExpressions` 时使用这些属性。
+ *
+ * 请注意，聚合函数的子节点可能无法解析（当我们在 DataFrame API 中创建此函数时会发生这种情况）。
+ * 因此，如果实现的类中有任何字段需要访问其子项的字段，请将这些字段设为 `lazy val`。
  *
  * DeclarativeAggregate聚合函数是一类直接由Catalyst中的表达式（Expressions）构建的聚合函数。
  */

@@ -525,6 +525,7 @@ case class Least(children: Seq[Expression]) extends Expression {
   override def nullable: Boolean = children.forall(_.nullable)
   override def foldable: Boolean = children.forall(_.foldable)
 
+  // 根据具体的结果数据类型获取排序器
   private lazy val ordering = TypeUtils.getInterpretedOrdering(dataType)
 
   override def checkInputDataTypes(): TypeCheckResult = {
@@ -539,12 +540,16 @@ case class Least(children: Seq[Expression]) extends Expression {
     }
   }
 
+  // 结果数据类型是头个子节点的数据类型
   override def dataType: DataType = children.head.dataType
 
+  // 对某行数据进行计算
   override def eval(input: InternalRow): Any = {
+    // 将行数据传入给子节点，比较大小
     children.foldLeft[Any](null)((r, c) => {
-      val evalc = c.eval(input)
+      val evalc = c.eval(input) // 计算结果
       if (evalc != null) {
+        // 保留较小的
         if (r == null || ordering.lt(evalc, r)) evalc else r
       } else {
         r
@@ -590,6 +595,7 @@ case class Greatest(children: Seq[Expression]) extends Expression {
   override def nullable: Boolean = children.forall(_.nullable)
   override def foldable: Boolean = children.forall(_.foldable)
 
+  // 根据具体的结果数据类型获取排序器
   private lazy val ordering = TypeUtils.getInterpretedOrdering(dataType)
 
   override def checkInputDataTypes(): TypeCheckResult = {
@@ -604,12 +610,16 @@ case class Greatest(children: Seq[Expression]) extends Expression {
     }
   }
 
+  // 结果数据类型是头个子节点的数据类型
   override def dataType: DataType = children.head.dataType
 
+  // 对某行数据进行计算
   override def eval(input: InternalRow): Any = {
+    // 将行数据传入给子节点，比较大小
     children.foldLeft[Any](null)((r, c) => {
-      val evalc = c.eval(input)
+      val evalc = c.eval(input) // 计算结果
       if (evalc != null) {
+        // 保留较大的
         if (r == null || ordering.gt(evalc, r)) evalc else r
       } else {
         r

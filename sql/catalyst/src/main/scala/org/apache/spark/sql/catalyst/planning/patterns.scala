@@ -223,6 +223,11 @@ object ExtractFiltersAndInnerJoins extends PredicateHelper {
  *  - The computation of the aggregations themselves is separated from the final result. For
  *    example, the `count` in `count + 1` will be split into an [[AggregateExpression]] and a final
  *    computation that computes `count.resultAttribute + 1`.
+ *
+ * 用于对Aggregation操作生成物理执行计划时使用的提取器。相比于Aggregation的逻辑计划，下面的转换将被应用：
+ * - 对没有命名的分组表达式进行命名（套上一个Alias表达式），方便在后续聚合过程中进行引用。
+ * - 对Aggregate逻辑算子节点中多次重复出现的聚合操作进行去重。
+ * - 从最后结果中分离出聚合计算本身的值，例如“count+1”会被拆分为count（AggregateExpression）和“count.resultAttribute + 1”的最终计算。
  */
 object PhysicalAggregation {
   // groupingExpressions, aggregateExpressions, resultExpressions, child
@@ -230,6 +235,7 @@ object PhysicalAggregation {
     (Seq[NamedExpression], Seq[AggregateExpression], Seq[NamedExpression], LogicalPlan)
 
   def unapply(a: Any): Option[ReturnType] = a match {
+    // 匹配Aggregate节点，三个参数分别是 (分组表达式, 聚合表达式, 子节点)
     case logical.Aggregate(groupingExpressions, resultExpressions, child) =>
       // A single aggregate expression might appear multiple times in resultExpressions.
       // In order to avoid evaluating an individual aggregate function multiple times, we'll
@@ -244,7 +250,7 @@ object PhysicalAggregation {
       }.distinct
 
       // 对未命名的分组表达式（Grouping expressions）进行命名（套上一个Alias表达式），这样方便在后续聚合过程中进行引用。
-      val namedGroupingExpressions = groupingExpressions.map {
+      val namedGroupingExpressions: Seq[(Expression, NamedExpression)] = groupingExpressions.map {
         case ne: NamedExpression => ne -> ne
         // If the expression is not a NamedExpressions, we add an alias.
         // So, when we generate the result of the operator, the Aggregate Operator
@@ -281,9 +287,9 @@ object PhysicalAggregation {
       }
 
       Some((
-        namedGroupingExpressions.map(_._2),
-        aggregateExpressions,
-        rewrittenResultExpressions,
+        namedGroupingExpressions.map(_._2), // 加上别名后的分组表达式
+        aggregateExpressions, // 去重后的聚合表达式
+        rewrittenResultExpressions, // 重写后的聚合表达式
         child))
 
     case _ => None

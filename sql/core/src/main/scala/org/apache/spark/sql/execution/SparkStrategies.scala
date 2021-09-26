@@ -263,11 +263,18 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
    */
   object Aggregation extends Strategy {
     def apply(plan: LogicalPlan): Seq[SparkPlan] = plan match {
+      /**
+       * 使用PhysicalAggregation进行解包，得到的四个参数分别是
+       * (加上别名后的分组表达式, 去重后的聚合表达式, 重写后的聚合表达式, 子节点)
+       */
       case PhysicalAggregation(
           groupingExpressions, aggregateExpressions, resultExpressions, child) =>
 
+        // 将聚合表达式分为需要去重的（functionsWithDistinct）和不需要去重的（functionsWithoutDistinct）
         val (functionsWithDistinct, functionsWithoutDistinct) =
           aggregateExpressions.partition(_.isDistinct)
+
+        // 需要去重的函数内，参数不可超过1个。
         if (functionsWithDistinct.map(_.aggregateFunction.children).distinct.length > 1) {
           // This is a sanity check. We should not reach here when we have multiple distinct
           // column sets. Our MultipleDistinctRewriter should take care this case.
@@ -277,6 +284,8 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
         val aggregateOperator =
           if (aggregateExpressions.map(_.aggregateFunction).exists(!_.supportsPartial)) {
+            // 聚合表达式中存在不支持Partial的聚合函数
+            // 不支持Partial聚合，但又存在Distinct函数，这种情况会打印错误日志。
             if (functionsWithDistinct.nonEmpty) {
               sys.error("Distinct columns cannot exist in Aggregate operator containing " +
                 "aggregate functions which don't support partial aggregation.")
@@ -296,7 +305,7 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
               resultExpressions,
               planLater(child))
           } else {
-            // 支持Partial聚合，有Distance
+            // 支持Partial聚合，有一个Distance
             AggUtils.planAggregateWithOneDistinct(
               groupingExpressions,
               functionsWithDistinct,

@@ -39,6 +39,7 @@ object SortPrefixUtils {
   private val emptyPrefix = new UnsafeExternalRowSorter.PrefixComputer.Prefix
 
   def getPrefixComparator(sortOrder: SortOrder): PrefixComparator = {
+    // 根据排序值类型的不同创建比较器
     sortOrder.dataType match {
       case StringType => stringPrefixComparator(sortOrder)
       case BinaryType => binaryPrefixComparator(sortOrder)
@@ -109,9 +110,11 @@ object SortPrefixUtils {
    */
   def getPrefixComparator(schema: StructType): PrefixComparator = {
     if (schema.nonEmpty) {
+      // 使用Schema的第一个Field创建比较器
       val field = schema.head
       getPrefixComparator(SortOrder(BoundReference(0, field.dataType, field.nullable), Ascending))
     } else {
+      // Schema为空，比较时总是返回0
       new PrefixComparator {
         override def compare(prefix1: Long, prefix2: Long): Int = 0
       }
@@ -142,28 +145,46 @@ object SortPrefixUtils {
 
   /**
    * Creates the prefix computer for the first field in the given schema, in ascending order.
+   *
+   * 根据给定的Schema中第一个字段创建前缀计算器，以升序方式
    */
   def createPrefixGenerator(schema: StructType): UnsafeExternalRowSorter.PrefixComputer = {
-    if (schema.nonEmpty) {
+    if (schema.nonEmpty) { // schema不为空
+      // 取第一个字段
       val boundReference = BoundReference(0, schema.head.dataType, nullable = true)
+
+      // 创建排序的前缀Expression
       val prefixExpr = SortPrefix(SortOrder(boundReference, Ascending))
+
+      // 对前缀Expression进行Projection封装
       val prefixProjection = UnsafeProjection.create(prefixExpr)
+
       new UnsafeExternalRowSorter.PrefixComputer {
         private val result = new UnsafeExternalRowSorter.PrefixComputer.Prefix
+
+        // 对输入的行计算前缀
         override def computePrefix(row: InternalRow):
             UnsafeExternalRowSorter.PrefixComputer.Prefix = {
+
+          // 先使用前缀投影器包装数据行
           val prefix = prefixProjection.apply(row)
+
+          // 根据投影后的值进行判断
           if (prefix.isNullAt(0)) {
+            // 投影后前缀值为空
             result.isNull = true
             result.value = prefixExpr.nullValue
           } else {
+            // 投影后前缀值不为空
             result.isNull = false
+            // 前缀值统一为Long
             result.value = prefix.getLong(0)
           }
           result
         }
       }
     } else {
+      // schema为空，每次计算返回的都是emptyPrefix，即UnsafeExternalRowSorter.PrefixComputer.Prefix
       new UnsafeExternalRowSorter.PrefixComputer {
         override def computePrefix(row: InternalRow):
             UnsafeExternalRowSorter.PrefixComputer.Prefix = {

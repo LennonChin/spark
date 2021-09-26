@@ -357,19 +357,25 @@ class Analyzer(
    * Replaces [[UnresolvedAlias]]s with concrete aliases.
    */
   object ResolveAliases extends Rule[LogicalPlan] {
+
+    // 解析别名，生成NamedExpression
     private def assignAliases(exprs: Seq[NamedExpression]) = {
+
+      // 遍历传入的所有表达式
       exprs.zipWithIndex.map {
         case (expr, i) =>
+          // 对每个表达式自底向上遍历子节点，匹配UnresolvedAlias节点
           expr.transformUp { case u @ UnresolvedAlias(child, optGenAliasFunc) =>
             child match {
+              // 子节点为NamedExpression，说明该节点已经被解析并且有名称了，直接返回子节点
               case ne: NamedExpression => ne
-              case e if !e.resolved => u
+              case e if !e.resolved => u // 子节点未解析，直接返回
               case g: Generator => MultiAlias(g, Nil)
-              case c @ Cast(ne: NamedExpression, _) => Alias(c, ne.name)()
-              case e: ExtractValue => Alias(e, toPrettySQL(e))()
+              case c @ Cast(ne: NamedExpression, _) => Alias(c, ne.name)() // 解析为Alias
+              case e: ExtractValue => Alias(e, toPrettySQL(e))() // 解析为Alias
               case e if optGenAliasFunc.isDefined =>
-                Alias(child, optGenAliasFunc.get.apply(e))()
-              case e => Alias(e, toPrettySQL(e))()
+                Alias(child, optGenAliasFunc.get.apply(e))() // 解析为Alias
+              case e => Alias(e, toPrettySQL(e))() // 解析为Alias
             }
           }
       }.asInstanceOf[Seq[NamedExpression]]
@@ -378,17 +384,28 @@ class Analyzer(
     private def hasUnresolvedAlias(exprs: Seq[NamedExpression]) =
       exprs.exists(_.find(_.isInstanceOf[UnresolvedAlias]).isDefined)
 
+    /**
+     * 主要找到节点中的UnresolvedAlias并进行解析。
+     * 别名的解析依赖子节点是否已经被解析过，如果子节点还未解析完毕，该规则不会生效。
+     *
+     * @param plan
+     * @return
+     */
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+      // 解析Aggregate聚合节点中聚合表达式的别名
       case Aggregate(groups, aggs, child) if child.resolved && hasUnresolvedAlias(aggs) =>
         Aggregate(groups, assignAliases(aggs), child)
 
+      // 解析GroupingSets聚合节点中聚合表达式的别名
       case g: GroupingSets if g.child.resolved && hasUnresolvedAlias(g.aggregations) =>
         g.copy(aggregations = assignAliases(g.aggregations))
 
+      // 解析Pivot节点中分组表达式的别名
       case Pivot(groupByExprs, pivotColumn, pivotValues, aggregates, child)
         if child.resolved && hasUnresolvedAlias(groupByExprs) =>
         Pivot(assignAliases(groupByExprs), pivotColumn, pivotValues, aggregates, child)
 
+      // 解析Project节点Project List中列的别名
       case Project(projectList, child) if child.resolved && hasUnresolvedAlias(projectList) =>
         Project(assignAliases(projectList), child)
     }
@@ -1138,29 +1155,34 @@ class Analyzer(
   object ResolveFunctions extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       case q: LogicalPlan =>
-        q transformExpressions {
+        q transformExpressions { // 遍历计划节点中的所有表达式
+          // 表达式子节点未解析，直接返回
           case u if !u.childrenResolved => u // Skip until children are resolved.
-          case u @ UnresolvedGenerator(name, children) =>
+          // 遇到UnresolvedGenerator节点
+          case u @ UnresolvedGenerator(name, children) => // 一般由侧写表生成，即Lateral View
             withPosition(u) {
+              // 从catalog中查找函数，得到具体的函数表达式
               catalog.lookupFunction(name, children) match {
-                case generator: Generator => generator
+                case generator: Generator => generator // 对于UnresolvedGenerator需要是Generate生成器函数
                 case other =>
                   failAnalysis(s"$name is expected to be a generator. However, " +
                     s"its class is ${other.getClass.getCanonicalName}, which is not a generator.")
               }
             }
+          // 遇到UnresolvedFunction节点
           case u @ UnresolvedFunction(funcId, children, isDistinct) =>
             withPosition(u) {
+              // 从catalog中查找函数，得到具体的函数表达式
               catalog.lookupFunction(funcId, children) match {
                 // DISTINCT is not meaningful for a Max or a Min.
-                case max: Max if isDistinct =>
+                case max: Max if isDistinct => // Distinct Max，生成聚合表达式，聚合模式是Complete
                   AggregateExpression(max, Complete, isDistinct = false)
-                case min: Min if isDistinct =>
+                case min: Min if isDistinct => // Distinct Min，生成聚合表达式，聚合模式是Complete
                   AggregateExpression(min, Complete, isDistinct = false)
                 // AggregateWindowFunctions are AggregateFunctions that can only be evaluated within
                 // the context of a Window clause. They do not need to be wrapped in an
                 // AggregateExpression.
-                case wf: AggregateWindowFunction => wf
+                case wf: AggregateWindowFunction => wf // 窗口聚合函数，直接返回
                 // We get an aggregate function, we need to wrap it in an AggregateExpression.
                 case agg: AggregateFunction => AggregateExpression(agg, Complete, isDistinct)
                 // This function is not an aggregate function, just return the resolved one.

@@ -111,7 +111,7 @@ case class HashAggregateExec(
             initialInputBufferOffset,
             resultExpressions,
             (expressions, inputSchema) =>
-              newMutableProjection(expressions, inputSchema, subexpressionEliminationEnabled),
+              newMutableProjection(expressions, inputSchema, subexpressionEliminationEnabled), // spark.sql.subexpressionElimination.enabled
             child.output,
             iter,
             testFallbackStartsAt,
@@ -898,6 +898,8 @@ case class HashAggregateExec(
 
 object HashAggregateExec {
   def supportsAggregate(aggregateBufferAttributes: Seq[Attribute]): Boolean = {
+    // 聚合表达式结果类型不属于NullType、BooleanType、ByteType、ShortType、IntegerType、LongType、
+    // FloatType、DoubleType、DateType、TimestampType、DecimalType中的任意一种，则不支持HashAggregate
     val aggregationBufferSchema = StructType.fromAttributes(aggregateBufferAttributes)
     UnsafeFixedWidthAggregationMap.supportsAggregationBufferSchema(aggregationBufferSchema)
   }

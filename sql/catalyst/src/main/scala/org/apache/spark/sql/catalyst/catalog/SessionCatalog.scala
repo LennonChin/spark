@@ -1031,6 +1031,15 @@ class SessionCatalog(
    * with this function (i.e. jars and files). Finally, we create a function builder
    * based on the function class and put the builder into the FunctionRegistry.
    * The name of this function in the FunctionRegistry will be `databaseName.functionName`.
+   *
+   * 当查找的函数存在时，返回一个用于表示具体函数的表达式。
+   *
+   * 对于临时函数或者已经被加载的永久函数，这个方法简单地从FunctionRegistry中查找，然后构造为Expression。
+   *
+   * 对于没有被加载的永久函数，首先从底层External Catalog的元数据中尝试获取，
+   * 然后我们会加载与该函数相关的所有资源（例如Jar包或文件）。
+   * 最后我们会基于函数的类创建一个函数构建器，并将该构建器存放到FunctionRegistry中。
+   * FunctionRegistry中的函数的名称将会是`databaseName.functionName`的形式。
    */
   def lookupFunction(
       name: FunctionIdentifier,
@@ -1038,15 +1047,20 @@ class SessionCatalog(
     // Note: the implementation of this function is a little bit convoluted.
     // We probably shouldn't use a single FunctionRegistry to register all three kinds of functions
     // (built-in, temp, and external).
+    // 注意：这个实现有一点复杂。我们或许不应该使用一个FunctionRegistry注册三种类型的（build-in, temp, external）函数。
+
+    // 函数名的databaseName为空，从FunctionRegistry中根据函数名查找。
     if (name.database.isEmpty && functionRegistry.functionExists(name.funcName)) {
       // This function has been already loaded into the function registry.
       return functionRegistry.lookupFunction(name.funcName, children)
     }
 
     // If the name itself is not qualified, add the current database to it.
+    // 使用当前数据库作为函数的所属数据库。
     val database = name.database.orElse(Some(currentDb)).map(formatDatabaseName)
     val qualifiedName = name.copy(database = database)
 
+    // 将当前数据库名加到函数名上，再次从FunctionRegistry中查找。
     if (functionRegistry.functionExists(qualifiedName.unquotedString)) {
       // This function has been already loaded into the function registry.
       // Unlike the above block, we find this function by using the qualified name.
@@ -1057,25 +1071,48 @@ class SessionCatalog(
     // that the function is a permanent function (if it actually has been registered
     // in the metastore). We need to first put the function in the FunctionRegistry.
     // TODO: why not just check whether the function exists first?
+    /**
+     * 这个函数还没有被加载到FunctionRegistry中，
+     * 意味着这个函数是一个永久函数（如果它实际上已经在Metastore中注册了）。
+     * 我们需要将该函数注册到FunctionRegistry中。
+     */
+
+    // 尝试从外部Catalog中根据数据库名和函数名查找。
     val catalogFunction = try {
       externalCatalog.getFunction(currentDb, name.funcName)
     } catch {
       case e: AnalysisException => failFunctionLookup(name.funcName)
       case e: NoSuchPermanentFunctionException => failFunctionLookup(name.funcName)
     }
+
+    // 加载查找到的函数的相关资源
     loadFunctionResources(catalogFunction.resources)
+
     // Please note that qualifiedName is provided by the user. However,
     // catalogFunction.identifier.unquotedString is returned by the underlying
     // catalog. So, it is possible that qualifiedName is not exactly the same as
     // catalogFunction.identifier.unquotedString (difference is on case-sensitivity).
     // At here, we preserve the input from the user.
+
+    /**
+     * 需要注意的是，qualifiedName是由用户提供的。
+     * 但是，catalogFunction.identifier.unquotedString是由底层Catalog返回的。
+     * 因此，可能qualifiedName不完全与Catalog中返回的catalogFunction.identifier.unquotedString相同（在大小写敏感度上）。
+     * 这里我们保持用户的输入。
+     */
     val info = new ExpressionInfo(
-      catalogFunction.className,
-      qualifiedName.database.orNull,
-      qualifiedName.funcName)
+      catalogFunction.className, // 函数具体的类名
+      qualifiedName.database.orNull, // 数据库名
+      qualifiedName.funcName) // 函数名
+
+    // 创建函数构造器
     val builder = makeFunctionBuilder(qualifiedName.unquotedString, catalogFunction.className)
+
+    // 将函数注册为临时函数
     createTempFunction(qualifiedName.unquotedString, info, builder, ignoreIfExists = false)
+
     // Now, we need to create the Expression.
+    // 从FunctionRegistry中查找函数并返回
     functionRegistry.lookupFunction(qualifiedName.unquotedString, children)
   }
 

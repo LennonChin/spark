@@ -62,6 +62,22 @@ import org.apache.spark.util.collection.unsafe.sort.UnsafeSorterSpillWriter;
  * This means that the first four bytes store the entire record (key + value) length. This format
  * is compatible with {@link org.apache.spark.util.collection.unsafe.sort.UnsafeExternalSorter},
  * so we can pass records from this map directly into the sorter to sort records in place.
+ *
+ * 只可进行追加操作的HashMap，key和value都是连续的字节区域。
+ *
+ * 由大小为2的次方的哈希表实现，使用三角值二次探测解决哈希冲突，能够保证耗尽空间。
+ *
+ * 这个Map可以支持2 ^ 29个键。如果键的数量大于该值，你应该考虑使用Sorting代替Hashing，以便取得更好的缓存本地性。
+ *
+ * Map中的键和值是存放在一起的，使用下面的格式：
+ * - 0 ~ 4 Bytes：键的字节长度 + 值的字节长度 + 4，注意，这里4指的即是0 ~ 4这4个字节。
+ * - 4 ~ 8 Bytes：键的长度。
+ * - 8 ~ 8 + len(k)：键的数据。
+ * - 8 + len(k) ~ 8 + len(k) + len(v)：值的长数据。
+ * - 8 + len(k) + len(v) ~ 8 + len(k) + len(v) + 8：指向下一个键值对的指针。
+ *
+ * 这意味着前面的4个字节用于存放整个记录（键 + 值）的长度。这种格式是对UnsafeExternalSorter兼容的，
+ * 因此我们可以直接将当前Map中的记录传递给UnsafeExternalSorter用于对记录进行原地排序。
  */
 public final class BytesToBytesMap extends MemoryConsumer {
 
@@ -447,6 +463,9 @@ public final class BytesToBytesMap extends MemoryConsumer {
    * and read/write values.
    *
    * This function always return the same {@link Location} instance to avoid object allocation.
+   *
+   * 用于查找某个键，返回Location对象，可以用于测试值是否存在或者读写值。
+   * 这个方法总是返回相同的Location对象，避免对象分配。
    */
   public Location lookup(Object keyBase, long keyOffset, int keyLength, int hash) {
     safeLookup(keyBase, keyOffset, keyLength, loc, hash);
@@ -457,13 +476,17 @@ public final class BytesToBytesMap extends MemoryConsumer {
    * Looks up a key, and saves the result in provided `loc`.
    *
    * This is a thread-safe version of `lookup`, could be used by multiple threads.
+   *
+   * 查找键，将结果保存到Location中。
+   * 这是一个线程安全的查找方法，可以在多线程环境使用。
    */
   public void safeLookup(Object keyBase, long keyOffset, int keyLength, Location loc, int hash) {
     assert(longArray != null);
 
     if (enablePerfMetrics) {
-      numKeyLookups++;
+      numKeyLookups++; // 记录查找键的操作次数
     }
+    // 哈希值限定范围
     int pos = hash & mask;
     int step = 1;
     while (true) {
@@ -686,6 +709,26 @@ public final class BytesToBytesMap extends MemoryConsumer {
      * <p>
      * Unspecified behavior if the key is not defined.
      * </p>
+     *
+     * 为键创建新的值。对于给定的键，这个方法会被调用多次。
+     * 返回值表示是否添加成功，可能会由于无法获取到内存而失败。
+     *
+     * 只有在调用lookup方法后使用相同的键like调用本方法才是有效的。
+     * 键和值必须的字对齐的（即，它们的宽度必须是8的倍数）。
+     *
+     * 在调用本方法后，调用get[Key|Value]Address()和get[Key|Value]Length会返回本方法存储的数据信息。
+     *
+     * 例如，下面是存入新建的方法：
+     * <pre>
+     *   Location loc = map.lookup(keyBase, keyOffset, keyLength);
+     *   if (!loc.isDefined()) {
+     *     if (!loc.append(keyBase, keyOffset, keyLength, ...)) {
+     *       // handle failure to grow map (by spilling, for example)
+     *     }
+     *   }
+     * </pre>
+     *
+     * 如果键未被定义，将不会有任何行为。
      *
      * @return true if the put() was successful and false if the put() failed because memory could
      *         not be acquired.

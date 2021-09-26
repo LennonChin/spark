@@ -205,7 +205,7 @@ class TungstenAggregationIterator(
             externalSorter.merge(sorter)
           }
           i = 0
-          // 再次获取Buffer，如果还是后驱不到，说明内存不够，就跑出OOM异常
+          // 再次获取Buffer，如果还是后驱不到，说明内存不够，就抛出OOM异常
           buffer = hashMap.getAggregationBufferFromUnsafeRow(groupingKey)
           if (buffer == null) {
             // failed to allocate the first page

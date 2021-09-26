@@ -17,6 +17,7 @@
 
 package org.apache.spark.sql.catalyst.expressions
 
+import java.lang
 import java.util.{Objects, UUID}
 
 import org.apache.spark.sql.catalyst.InternalRow
