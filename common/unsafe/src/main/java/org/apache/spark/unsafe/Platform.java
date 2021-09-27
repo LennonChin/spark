@@ -48,12 +48,17 @@ public final class Platform {
     boolean _unaligned;
     // use reflection to access unaligned field
     try {
+      // 使用反射取java.nio.Bits的unaligned()方法的返回值
       Class<?> bitsClass =
         Class.forName("java.nio.Bits", false, ClassLoader.getSystemClassLoader());
       Method unalignedMethod = bitsClass.getDeclaredMethod("unaligned");
       unalignedMethod.setAccessible(true);
       _unaligned = Boolean.TRUE.equals(unalignedMethod.invoke(null));
     } catch (Throwable t) {
+      /**
+       * 如果返回值失败，就从系统平台标识中获取。
+       * i386、x86、amd64、x86_64、ppc64、ppc64le
+       */
       // We at least know x86 and x64 support unaligned access.
       String arch = System.getProperty("os.arch", "");
       //noinspection DynamicRegexReplaceableByCompiledPattern

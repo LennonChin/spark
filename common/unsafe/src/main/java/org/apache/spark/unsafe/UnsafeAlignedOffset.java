@@ -23,6 +23,10 @@ package org.apache.spark.unsafe;
  * requires this because using a 4 byte Int for record lengths causes
  * the entire record of 8 byte Items to become misaligned by 4 bytes.
  * Using a 8 byte long for record length keeps things 8 byte aligned.
+ *
+ * 该类用于在 Apache Spark 核心和不安全的各个区域中对记录长度偏移进行统一更改。
+ * SPARC 平台需要这样做，因为对记录长度使用 4 字节 Int 会导致 8 字节项目的整个记录错位 4 字节。
+ * 使用 8 字节长的记录长度可以保持 8 字节对齐。
  */
 public class UnsafeAlignedOffset {
 
