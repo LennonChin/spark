@@ -51,11 +51,13 @@ public final class UnsafeSortDataFormat
   @Override
   public RecordPointerAndKeyPrefix getKey(LongArray data, int pos,
                                           RecordPointerAndKeyPrefix reuse) {
+    // 取pos位置的记录指针和值前缀
     reuse.recordPointer = data.get(pos * 2);
     reuse.keyPrefix = data.get(pos * 2 + 1);
     return reuse;
   }
 
+  // 交换操作
   @Override
   public void swap(LongArray data, int pos0, int pos1) {
     long tempPointer = data.get(pos0 * 2);
