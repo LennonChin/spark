@@ -116,7 +116,7 @@ public final class UnsafeInMemorySorter {
    * 这个array和BytesToBytesMap中的longArray结构一样。用于存放键值对的LongArray。
    * 在数组中：
    * - 2 * i的位置用于跟踪指向i位置key的指针。
-   * - 2 * i + 1的位置用于存放key的32比特位的哈希码。
+   * - 2 * i + 1的位置用于存放key的8 bytes的key prefix。
    * 每个为都是一个Long型整数。
    *
    * 该数组只有一部分用于存放指针，剩余的部分主要保留用于排序时的临时缓冲区。

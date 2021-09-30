@@ -224,7 +224,11 @@ public final class UnsafeExternalSorter extends MemoryConsumer {
   @Override
   public long spill(long size, MemoryConsumer trigger) throws IOException {
     if (trigger != this) {
-      // 如果是自己触发的溢写，使用readingIterator进行溢写
+      /**
+       * 如果是自己触发的溢写，使用readingIterator进行溢写，readingIterator的类型是SpillableIterator，
+       * readingIterator会在创建SortedIterator时被赋值，它封装了对UnsafeExternalSorter中记录的迭代过程
+       * 也即是说，一旦获取了UnsafeExternalSorter的迭代器，表示外界开始进行迭代数据了，此时应该将溢写操作交给迭代器来处理。
+       */
       if (readingIterator != null) {
         return readingIterator.spill();
       }

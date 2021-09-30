@@ -309,7 +309,7 @@ abstract class AggregationIterator(
     val modes = aggregateExpressions.map(_.mode).distinct
     val bufferAttributes = aggregateFunctions.flatMap(_.aggBufferAttributes)
 
-    if (modes.contains(Final) || modes.contains(Complete)) { // Final/Complete还是阶段
+    if (modes.contains(Final) || modes.contains(Complete)) { // Final/Complete阶段
 
       // 执行表达式
       val evalExpressions = aggregateFunctions.map {

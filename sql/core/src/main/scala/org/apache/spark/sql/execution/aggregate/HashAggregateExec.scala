@@ -34,6 +34,8 @@ import org.apache.spark.util.Utils
 
 /**
  * Hash-based aggregate operator that can also fallback to sorting when data exceeds memory size.
+ *
+ * Hash-based聚合操作，在内存不足时可以退化为Sorted-based聚合。
  */
 case class HashAggregateExec(
     requiredChildDistributionExpressions: Option[Seq[Expression]],
@@ -49,12 +51,15 @@ case class HashAggregateExec(
     aggregateExpressions.flatMap(_.aggregateFunction.aggBufferAttributes)
   }
 
+  // 检查是否支持Hash-based聚合
   require(HashAggregateExec.supportsAggregate(aggregateBufferAttributes))
 
+  // 节点所涉及的所有属性（Attribute）列表
   override lazy val allAttributes: AttributeSeq =
     child.output ++ aggregateBufferAttributes ++ aggregateAttributes ++
       aggregateExpressions.flatMap(_.aggregateFunction.inputAggBufferAttributes)
 
+  // 构造度量字典
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"),
     "peakMemory" -> SQLMetrics.createSizeMetric(sparkContext, "peak memory"),
@@ -63,8 +68,10 @@ case class HashAggregateExec(
 
   override def output: Seq[Attribute] = resultExpressions.map(_.toAttribute)
 
+  // 输出分区就是子节点的输出分区
   override def outputPartitioning: Partitioning = child.outputPartitioning
 
+  // 节点产生的属性
   override def producedAttributes: AttributeSet =
     AttributeSet(aggregateAttributes) ++
     AttributeSet(resultExpressions.diff(groupingExpressions).map(_.toAttribute)) ++
@@ -95,33 +102,39 @@ case class HashAggregateExec(
     val peakMemory = longMetric("peakMemory")
     val spillSize = longMetric("spillSize")
 
+    // 遍历子节点执行后得到RDD的每个分区
     child.execute().mapPartitions { iter =>
 
       val hasInput = iter.hasNext
       if (!hasInput && groupingExpressions.nonEmpty) {
         // This is a grouped aggregate and the input iterator is empty,
         // so return an empty iterator.
+        // 分区内没有数据且分组表达式不为空，直接返回空迭代器
         Iterator.empty
       } else {
+        // 创建TungstenAggregationIterator迭代器
         val aggregationIterator =
           new TungstenAggregationIterator(
-            groupingExpressions,
-            aggregateExpressions,
-            aggregateAttributes,
-            initialInputBufferOffset,
-            resultExpressions,
+            groupingExpressions, // 分组表达式列表
+            aggregateExpressions, // 聚合表达式列表
+            aggregateAttributes, // 聚合属性列表
+            initialInputBufferOffset, // 初始化InputBufferOffset
+            resultExpressions, // 结果表达式列表
             (expressions, inputSchema) =>
               newMutableProjection(expressions, inputSchema, subexpressionEliminationEnabled), // spark.sql.subexpressionElimination.enabled
-            child.output,
-            iter,
+            child.output, // 子节点输出列
+            iter, // 分区迭代器
             testFallbackStartsAt,
+            // 下面是三个Metrics指标
             numOutputRows,
             peakMemory,
             spillSize)
         if (!hasInput && groupingExpressions.isEmpty) {
+          // 没有数据，分组表达式为空
           numOutputRows += 1
           Iterator.single[UnsafeRow](aggregationIterator.outputForEmptyGroupingKeyWithoutInput())
         } else {
+          // 有数据，分组表达式也不为空
           aggregationIterator
         }
       }
@@ -133,6 +146,7 @@ case class HashAggregateExec(
 
   override def usedInputs: AttributeSet = inputSet
 
+  // 存在ImperativeAggregate聚合函数时不支持Codegen
   override def supportCodegen: Boolean = {
     // ImperativeAggregate is not supported right now
     !aggregateExpressions.exists(_.aggregateFunction.isInstanceOf[ImperativeAggregate])

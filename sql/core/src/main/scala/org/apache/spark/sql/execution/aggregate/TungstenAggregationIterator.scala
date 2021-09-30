@@ -60,6 +60,34 @@ import org.apache.spark.unsafe.KVIterator
  *  - Part 8: A utility function used to generate a result when there is no
  *            input and there is no grouping expression.
  *
+ *
+ *
+ * 用于评估执行函数的迭代器。 它在 [[UnsafeRow]] 上运行。
+ *
+ * 这个迭代器首先使用基于散列的聚合来处理输入行。 它使用HashMap来存储组及其相应的聚合缓冲区。
+ * 如果这个映射不能从内存管理器分配内存，它会将Map溢出到磁盘并创建一个新的。
+ * 处理完所有输入后，然后使用外部排序器将所有溢出合并在一起，并进行基于排序的聚合。
+ *
+ * 该过程有以下步骤：
+ * 1. 处理基于Hash的聚合。
+ * 2. 对HashMap中所有的键值对基于分组表达式进行排序，并溢写到磁盘上。
+ * 3. 根据溢出的有序Map中的键值对创建外部排序器并重置HashMap。
+ * 4. 从外部排序器获取排好序的KVIterator。
+ * 5. 重复第1步直到没有输入记录。
+ * 5. 在已排序的迭代器上初始化基于排序的聚合。
+ *
+ * 然后，这个迭代器以基于排序的聚合方式工作。
+ *
+ * 该类的代码组织如下：
+ * 1. 初始化聚合函数。
+ * 2. 用于设置聚合缓冲区的方法和字段，处理从inputIter输入的数据行，生成输出数据行。
+ * 3. 基于Hash的聚合器使用的方法和字段。
+ * 4. 当切换到基于排序的聚合器使用方法和字段。
+ * 5. 基于排序的聚合器使用的方法和字段。
+ * 6. 加载输入并处理输入行。
+ * 7. 迭代器的公共方法.
+ * 8. 当没有输入数据和分组表达式时用于生成结果的工具函数.
+ *
  * @param groupingExpressions
  *   expressions for grouping keys
  * @param aggregateExpressions
@@ -102,21 +130,30 @@ class TungstenAggregationIterator(
 
   ///////////////////////////////////////////////////////////////////////////
   // Part 1: Initializing aggregate functions.
+  // 初始化聚合函数。
   ///////////////////////////////////////////////////////////////////////////
 
   // Remember spill data size of this task before execute this operator so that we can
   // figure out how many bytes we spilled for this operator.
+  /**
+   * 在执行这个算子之前记住这个任务的溢出数据大小，这样我们就可以算出我们为这个算子溢出了多少字节。
+   */
   private val spillSizeBefore = TaskContext.get().taskMetrics().memoryBytesSpilled
 
   ///////////////////////////////////////////////////////////////////////////
   // Part 2: Methods and fields used by setting aggregation buffer values,
   //         processing input rows from inputIter, and generating output
   //         rows.
+  // 用于设置聚合缓冲区的方法和字段，处理从inputIter输入的数据行，生成输出数据行。
   ///////////////////////////////////////////////////////////////////////////
 
   // Creates a new aggregation buffer and initializes buffer values.
   // This function should be only called at most two times (when we create the hash map,
   // and when we create the re-used buffer for sort-based aggregation).
+  /**
+   * 创建一个新的聚合缓冲区并初始化缓冲区的值。
+   * 这个函数最多只能被调用两次（当我们创建HashMap时，以及当我们为基于排序的聚合创建重用的缓冲区时）。
+   */
   private def createNewAggregationBuffer(): UnsafeRow = {
     val bufferSchema = aggregateFunctions.flatMap(_.aggBufferAttributes)
     val buffer: UnsafeRow = UnsafeProjection.create(bufferSchema.map(_.dataType))
@@ -129,14 +166,22 @@ class TungstenAggregationIterator(
   }
 
   // Creates a function used to generate output rows.
+  // 创建用于生成输出行的函数
   override protected def generateResultProjection(): (UnsafeRow, InternalRow) => UnsafeRow = {
     val modes = aggregateExpressions.map(_.mode).distinct
+
+    /**
+     * 对于非Final或非Complete的阶段性聚合，需要将分组键一并返回，
+     * 其他情况可以直接交给父类处理。
+     */
     if (modes.nonEmpty && !modes.contains(Final) && !modes.contains(Complete)) {
       // Fast path for partial aggregation, UnsafeRowJoiner is usually faster than projection
       val groupingAttributes = groupingExpressions.map(_.toAttribute)
       val bufferAttributes = aggregateFunctions.flatMap(_.aggBufferAttributes)
       val groupingKeySchema = StructType.fromAttributes(groupingAttributes)
       val bufferSchema = StructType.fromAttributes(bufferAttributes)
+
+      // SpecificUnsafeRowJoiner类型，Codegen生成
       val unsafeRowJoiner = GenerateUnsafeRowJoiner.create(groupingKeySchema, bufferSchema)
 
       (currentGroupingKey: UnsafeRow, currentBuffer: InternalRow) => {
@@ -149,6 +194,7 @@ class TungstenAggregationIterator(
 
   // An aggregation buffer containing initial buffer values. It is used to
   // initialize other aggregation buffers.
+  // 包含初始值的聚合缓冲区，用于初始化其他聚合缓冲区。
   private[this] val initialAggregationBuffer: UnsafeRow = createNewAggregationBuffer()
 
   ///////////////////////////////////////////////////////////////////////////
@@ -173,7 +219,7 @@ class TungstenAggregationIterator(
   // hashMap. If there is not enough memory, it will multiple hash-maps, spilling
   // after each becomes full then using sort to merge these spills, finally do sort
   // based aggregation.
-  // 触发聚合操作，得到最终的聚合结果，依赖Aggregation Iterator的功能。
+  // 触发聚合操作，得到最终的聚合结果，依赖AggregationIterator的功能。
   private def processInputs(fallbackStartsAt: (Int, Int)): Unit = {
     if (groupingExpressions.isEmpty) { // 分组表达式为空，只要在获取输入数据的迭代过程中不断调用processRow函数来处理数据即可
       // If there is no grouping expressions, we can just reuse the same buffer over and over again.
@@ -205,7 +251,7 @@ class TungstenAggregationIterator(
             externalSorter.merge(sorter)
           }
           i = 0
-          // 再次获取Buffer，如果还是后驱不到，说明内存不够，就抛出OOM异常
+          // 再次获取Buffer，如果还是获取不到，说明内存不够，就抛出OOM异常
           buffer = hashMap.getAggregationBufferFromUnsafeRow(groupingKey)
           if (buffer == null) {
             // failed to allocate the first page
@@ -241,6 +287,7 @@ class TungstenAggregationIterator(
   private[this] var aggregationBufferMapIterator: KVIterator[UnsafeRow, UnsafeRow] = null
 
   // Indicates if aggregationBufferMapIterator still has key-value pairs.
+  // 标记aggregationBufferMapIterator迭代器中是否还有键值对
   private[this] var mapIteratorHasNext: Boolean = false
 
   ///////////////////////////////////////////////////////////////////////////
@@ -296,6 +343,7 @@ class TungstenAggregationIterator(
 
   // Indicates if we are using sort-based aggregation. Because we first try to use
   // hash-based aggregation, its initial value is false.
+  // 标记是否使用基于排序的聚合。由于一开始是尝试使用基于Hash的聚合，所以该属性初始值为false。
   private[this] var sortBased: Boolean = false
 
   // The KVIterator containing input rows for the sort-based aggregation. It will be
@@ -312,6 +360,7 @@ class TungstenAggregationIterator(
   private[this] var firstRowInNextGroup: UnsafeRow = null
 
   // Indicates if we has new group of rows from the sorted input iterator.
+  // 标记在排序输入的迭代器中是否还有新的分组。
   private[this] var sortedInputHasNewGroup: Boolean = false
 
   // The aggregation buffer used by the sort-based aggregation.
@@ -369,18 +418,22 @@ class TungstenAggregationIterator(
 
   /**
    * Start processing input rows.
+   * 开始处理行数据
    */
   processInputs(testFallbackStartsAt.getOrElse((Int.MaxValue, Int.MaxValue)))
 
   // If we did not switch to sort-based aggregation in processInputs,
   // we pre-load the first key-value pair from the map (to make hasNext idempotent).
+  // 在processInputs方法中没有切换到基于Sort的聚合，可以从Map中预加载第一对键值对（用于让hasNext方法幂等）
   if (!sortBased) {
     // First, set aggregationBufferMapIterator.
+    // 获取UnsafeFixedWidthAggregationMap的迭代器
     aggregationBufferMapIterator = hashMap.iterator()
     // Pre-load the first key-value pair from the aggregationBufferMapIterator.
+    // 预加载第一对键值对
     mapIteratorHasNext = aggregationBufferMapIterator.next()
     // If the map is empty, we just free it.
-    if (!mapIteratorHasNext) {
+    if (!mapIteratorHasNext) { // 没有剩余的键值对了，就释放HashMap
       hashMap.free()
     }
   }
@@ -389,23 +442,30 @@ class TungstenAggregationIterator(
   // Part 7: Iterator's public methods.
   ///////////////////////////////////////////////////////////////////////////
 
+  // 判断是否还有未输出的分组
   override final def hasNext: Boolean = {
-    (sortBased && sortedInputHasNewGroup) || (!sortBased && mapIteratorHasNext)
+    (sortBased && sortedInputHasNewGroup) || // 使用基于排序的聚合时使用的判断
+      (!sortBased && mapIteratorHasNext) // 使用基于Hash的聚合时使用的判断
   }
 
   override final def next(): UnsafeRow = {
     if (hasNext) {
-      val res = if (sortBased) {
+      // 需要判断是否切换为基于Sort的聚合，分别处理
+      val res = if (sortBased) { // 进入if分支表示切换为基于Sort的聚合，需使用基于Sort的聚合方式处理组的聚合
         // Process the current group.
+        // 处理当前分组
         processCurrentSortedGroup()
         // Generate output row for the current group.
+        // 生成当前分组的输出行，这里需要把正常的列和聚合列合并起来
         val outputRow = generateOutput(currentGroupingKey, sortBasedAggregationBuffer)
         // Initialize buffer values for the next group.
+        // 为下一个分组重置聚合缓冲区
         sortBasedAggregationBuffer.copyFrom(initialAggregationBuffer)
 
         outputRow
       } else {
         // We did not fall back to sort-based aggregation.
+        // 没有切换为基于Sort的聚合，先生成输入行，这里需要把正常的列和聚合列合并起来
         val result =
           generateOutput(
             aggregationBufferMapIterator.getKey,
@@ -413,10 +473,12 @@ class TungstenAggregationIterator(
 
         // Pre-load next key-value pair form aggregationBufferMapIterator to make hasNext
         // idempotent.
+        // 从KVIterator预加载下一行键值对，保持hasNext幂等
         mapIteratorHasNext = aggregationBufferMapIterator.next()
 
         if (!mapIteratorHasNext) {
           // If there is no input from aggregationBufferMapIterator, we copy current result.
+          // 如果没有下一条记录，需要释放HashMap
           val resultCopy = result.copy()
           // Then, we free the map.
           hashMap.free()
@@ -430,12 +492,19 @@ class TungstenAggregationIterator(
       // If this is the last record, update the task's peak memory usage. Since we destroy
       // the map to create the sorter, their memory usages should not overlap, so it is safe
       // to just use the max of the two.
+      /**
+       * 如果这是最后一条记录，则更新Task的峰值内存使用量。
+       * 由于我们销毁HashMap以创建排序器，因此它们的内存使用不应重叠，因此仅使用两者中的最大值是安全的。
+       */
       if (!hasNext) {
+        // 取HashMap和ExternalSorter中峰值内存的较大者为使用的最大峰值内存
         val mapMemory = hashMap.getPeakMemoryUsedBytes
         val sorterMemory = Option(externalSorter).map(_.getPeakMemoryUsedBytes).getOrElse(0L)
         val maxMemory = Math.max(mapMemory, sorterMemory)
         val metrics = TaskContext.get().taskMetrics()
         peakMemory += maxMemory
+
+        // 记录溢写数据量
         spillSize += metrics.memoryBytesSpilled - spillSizeBefore
         metrics.incPeakExecutionMemory(maxMemory)
       }
