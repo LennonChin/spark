@@ -578,17 +578,24 @@ object Expand {
   /**
    * Extract attribute set according to the grouping id.
    *
+   * 通过bitmask提取未被选中的分组属性
+   *
    * @param bitmask bitmask to represent the selected of the attribute sequence
+   *                表示选中的属性的掩码
    * @param attrs the attributes in sequence
+   *              属性列表
    * @return the attributes of non selected specified via bitmask (with the bit set to 1)
    */
   private def buildNonSelectAttrSet(
       bitmask: Int,
       attrs: Seq[Attribute]): AttributeSet = {
+
+    // 未选中的集合
     val nonSelect = new ArrayBuffer[Attribute]()
 
     var bit = attrs.length - 1
     while (bit >= 0) {
+      // 对应bit位为1，表示该属性未被选中，就添加到nonSelect数组中。
       if (((bitmask >> bit) & 1) == 1) nonSelect += attrs(attrs.length - bit - 1)
       bit -= 1
     }
@@ -612,8 +619,8 @@ object Expand {
    */
   def apply(
     bitmasks: Seq[Int],
-    groupByAliases: Seq[Alias],
-    groupByAttrs: Seq[Attribute],
+    groupByAliases: Seq[Alias], // 分组列别名
+    groupByAttrs: Seq[Attribute], // 分组列
     gid: Attribute,
     child: LogicalPlan): Expand = {
     // Create an array of Projections for the child projection, and replace the projections'
@@ -621,23 +628,33 @@ object Expand {
     // are not set for this grouping set (according to the bit mask).
     val projections = bitmasks.map { bitmask =>
       // get the non selected grouping attributes according to the bit mask
+      // 根据bitmask提取未被选中的分组属性列
       val nonSelectedGroupAttrSet = buildNonSelectAttrSet(bitmask, groupByAttrs)
 
       child.output ++ groupByAttrs.map { attr =>
+
+        // 判断GROUP BY中的列是否应该作为被分组的列
         if (nonSelectedGroupAttrSet.contains(attr)) {
           // if the input attribute in the Invalid Grouping Expression set of for this group
           // replace it with constant null
+          // 该列没有被选作为分组列，就将其置为NULL
           Literal.create(null, attr.dataType)
         } else {
+          // 该列选作了分组列，那么该列也应该被输出
           attr
         }
       // groupingId is the last output, here we use the bit mask as the concrete value for it.
+      // grouping_id列在最后输出，使用具体的bitmask码填充它。
       } :+ Literal.create(bitmask, IntegerType)
     }
 
     // the `groupByAttrs` has different meaning in `Expand.output`, it could be the original
     // grouping expression or null, so here we create new instance of it.
+    /**
+     * groupByAttrs与Expand.output有不同的意义，它可能是原始分组表达式，也可能是NULL，所以这里创建了它的实例
+     */
     val output = child.output ++ groupByAttrs.map(_.newInstance) :+ gid
+    // 这里会在Expand和原来的子节点之间添加一个Project节点，用于对输出列进行投影，额外添加GROUP BY语句中经过别名处理后的列。
     Expand(projections, output, Project(child.output ++ groupByAliases, child))
   }
 }

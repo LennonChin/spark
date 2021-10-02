@@ -34,50 +34,81 @@ import org.apache.spark.sql.execution.metric.SQLMetrics
  * @param child       Child operator
  */
 case class ExpandExec(
-    projections: Seq[Seq[Expression]],
-    output: Seq[Attribute],
-    child: SparkPlan)
+    projections: Seq[Seq[Expression]], // 用于分组的分组列的列表
+    output: Seq[Attribute], // 节点输出属性列表
+    child: SparkPlan) // 子节点
   extends UnaryExecNode with CodegenSupport {
 
+  // 度量信息，用于记录输出了多少条记录
   override lazy val metrics = Map(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   // The GroupExpressions can output data with arbitrary partitioning, so set it
   // as UNKNOWN partitioning
+  // GroupExpressions可以输出任意分区的数据，所以设置为UNKNOWN分区
   override def outputPartitioning: Partitioning = UnknownPartitioning(0)
 
+  // projections中的所有列属性
   override def references: AttributeSet =
     AttributeSet(projections.flatten.flatMap(_.references))
 
+  // 根据给定表达式列表和子节点输出创建UnsafeProjection的函数
   private[this] val projection =
     (exprs: Seq[Expression]) => UnsafeProjection.create(exprs, child.output)
 
   protected override def doExecute(): RDD[InternalRow] = attachTree(this, "execute") {
+
+    // 获取度量
     val numOutputRows = longMetric("numOutputRows")
 
-    child.execute().mapPartitions { iter =>
+    child.execute().mapPartitions { iter => // 遍历子节点输出的分区，针对每个分区进行处理
+
+      // 根据分组列创建各自的 (groupingKeys: Seq[Expression]) => UnsafeProjection 函数
       val groups = projections.map(projection).toArray
       new Iterator[InternalRow] {
         private[this] var result: InternalRow = _
+
+        // idx索引记录当前数据行已经被groups中那个索引位上的Projection投影了
         private[this] var idx = -1  // -1 means the initial state
+
+        // 用于持有读到的数据行
         private[this] var input: InternalRow = _
 
         override final def hasNext: Boolean = (-1 < idx && idx < groups.length) || iter.hasNext
 
         override final def next(): InternalRow = {
+
+          // idx <= 0 说明还未进行数据行读入，或者上一行数据已经经过groups中的Projection膨胀了，准备处理下一行数据
           if (idx <= 0) {
             // in the initial (-1) or beginning(0) of a new input row, fetch the next input tuple
+            // 获取下一行数据
             input = iter.next()
+            // 将idx置为0
             idx = 0
+
+            val inputScore = if (!input.isNullAt(0)) input.getInt(0) else "NULL"
+            val inputClassId = if (!input.isNullAt(1)) input.getInt(1) else "NULL"
+            val inputSubject = if (!input.isNullAt(2)) input.getString(2) else "NULL"
+            logDebug(s"Input >>> Score: ${inputScore}, Class ID: ${inputClassId}, Subject: ${inputSubject}")
           }
 
+          // 每一行数据会被groups里所有的Projection逐次投影，因此一行数据会膨胀为多条。
           result = groups(idx)(input)
+
+          val resultScore = if (!result.isNullAt(0)) result.getInt(0) else "NULL"
+          val resultClassId = if (!result.isNullAt(1)) result.getInt(1) else "NULL"
+          val resultSubject = if (!result.isNullAt(2)) result.getString(2) else "NULL"
+          val SPARK_GROUPING_ID = if (!result.isNullAt(3)) result.getInt(3).toBinaryString else "NULL"
+          logDebug(s"Result >> Score: ${resultScore}, Class ID: ${resultClassId}, Subject: ${resultSubject}, SPARK_GROUPING_ID: ${SPARK_GROUPING_ID}")
+
           idx += 1
 
+          // 当前输入的数据行已经膨胀完毕，需要读入下一条数据，将idx置为0
           if (idx == groups.length && iter.hasNext) {
             idx = 0
           }
 
+          // 该指标记录了膨胀后的数据总量
           numOutputRows += 1
           result
         }
