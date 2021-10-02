@@ -49,22 +49,29 @@ private[window] abstract class RowBuffer {
  */
 private[window] class ArrayRowBuffer(buffer: ArrayBuffer[UnsafeRow]) extends RowBuffer {
 
+  // 迭代游标
   private[this] var cursor: Int = -1
 
-  /** Number of rows. */
+  /** Number of rows.
+   * Buffer大小即是传入ArrayBuffer大小
+   **/
   override def size: Int = buffer.length
 
-  /** Return next row in the buffer, null if no more left. */
+  /** Return next row in the buffer, null if no more left.
+   * 迭代方式即不断迭代传入的ArrayBuffer中的数据
+   **/
   override def next(): InternalRow = {
-    cursor += 1
+    cursor += 1 // 迭代游标自增
     if (cursor < buffer.length) {
-      buffer(cursor)
+      buffer(cursor) // 根据索引取下一行数据
     } else {
       null
     }
   }
 
-  /** Skip the next `n` rows. */
+  /** Skip the next `n` rows.
+   * 跳过N行
+   **/
   override def skip(n: Int): Unit = {
     cursor += n
   }
@@ -81,17 +88,26 @@ private[window] class ArrayRowBuffer(buffer: ArrayBuffer[UnsafeRow]) extends Row
 private[window] class ExternalRowBuffer(sorter: UnsafeExternalSorter, numFields: Int)
   extends RowBuffer {
 
+  // 通过UnsafeExternalSorter获取迭代器
   private[this] val iter: UnsafeSorterIterator = sorter.getIterator
 
+  // 用于存放当前迭代的行数据
   private[this] val currentRow = new UnsafeRow(numFields)
 
-  /** Number of rows. */
+  /** Number of rows.
+   * 即迭代器内的行数
+   **/
   override def size: Int = iter.getNumRecords()
 
-  /** Return next row in the buffer, null if no more left. */
+  /** Return next row in the buffer, null if no more left.
+   *
+   * 迭代下一条行数据
+   **/
   override def next(): InternalRow = {
     if (iter.hasNext) {
+      // 使用loadNext()加载行数据
       iter.loadNext()
+      // 将currentRow锚定行数据的内存区域
       currentRow.pointTo(iter.getBaseObject, iter.getBaseOffset, iter.getRecordLength)
       currentRow
     } else {
@@ -99,7 +115,9 @@ private[window] class ExternalRowBuffer(sorter: UnsafeExternalSorter, numFields:
     }
   }
 
-  /** Skip the next `n` rows. */
+  /** Skip the next `n` rows.
+   * 跳过N行
+   **/
   override def skip(n: Int): Unit = {
     var i = 0
     while (i < n && iter.hasNext) {

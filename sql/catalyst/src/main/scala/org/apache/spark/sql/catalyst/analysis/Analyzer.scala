@@ -1905,9 +1905,12 @@ class Analyzer(
    *    it into the plan tree.
    */
   object ExtractWindowExpressions extends Rule[LogicalPlan] {
+
+    // 判断传入的表达式列表中是否存在WindowExpression表达式
     private def hasWindowFunction(projectList: Seq[NamedExpression]): Boolean =
       projectList.exists(hasWindowFunction)
 
+    // 判断传入的表达式列表中是否存在WindowExpression表达式
     private def hasWindowFunction(expr: NamedExpression): Boolean = {
       expr.find {
         case window: WindowExpression => true
