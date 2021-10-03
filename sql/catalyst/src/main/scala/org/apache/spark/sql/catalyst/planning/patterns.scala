@@ -100,43 +100,65 @@ object PhysicalOperation extends PredicateHelper {
  * Null-safe equality will be transformed into equality as joining key (replace null with default
  * value).
  *
- * 提取出Join算子中的连接条件。
+ * 提取可以使用equi-join执行的等值连接
+ *
  * Null-safe等值连接会将转换为等值连接（将null替换成默认值）。
+ * 如果是等值连接（Equi-Join），则将左、右子节点的连接key都提取出来。
  */
 object ExtractEquiJoinKeys extends Logging with PredicateHelper {
   /** (joinType, leftKeys, rightKeys, condition, leftChild, rightChild) */
+  // 返回值类型：(连接类型, 左表连接列, 右表连接列, 连接条件, 左表子节点, 右表子节点)
   type ReturnType =
     (JoinType, Seq[Expression], Seq[Expression], Option[Expression], LogicalPlan, LogicalPlan)
 
   def unapply(plan: LogicalPlan): Option[ReturnType] = plan match {
+
+    // 匹配Join节点
     case join @ Join(left, right, joinType, condition) =>
       logDebug(s"Considering join on: $condition")
       // Find equi-join predicates that can be evaluated before the join, and thus can be used
       // as join keys.
+
+      // 找到所有And类型的连接条件转换为一个列表
       val predicates = condition.map(splitConjunctivePredicates).getOrElse(Nil)
+
+      // 遍历连接条件
       val joinKeys = predicates.flatMap {
         case EqualTo(l, r) if l.references.isEmpty || r.references.isEmpty => None
+        // 调换equal to两侧表达式的位置，该操作会将可从left节点计算得到的表达式放在左边，将可从right节点计算得到的表达式放在右边。
         case EqualTo(l, r) if canEvaluate(l, left) && canEvaluate(r, right) => Some((l, r))
         case EqualTo(l, r) if canEvaluate(l, right) && canEvaluate(r, left) => Some((r, l))
+
         // Replace null with default value for joining key, then those rows with null in it could
         // be joined together
+        // 对于连接键，替换null值为默认值，这样一来那些有null值的行就可以连接在一起
         case EqualNullSafe(l, r) if canEvaluate(l, left) && canEvaluate(r, right) =>
+          // 包装一层Coalesce算子，当连接key为null时使用具体类型的默认值代替
           Some((Coalesce(Seq(l, Literal.default(l.dataType))),
             Coalesce(Seq(r, Literal.default(r.dataType)))))
         case EqualNullSafe(l, r) if canEvaluate(l, right) && canEvaluate(r, left) =>
+          // 包装一层Coalesce算子，当连接key为null时使用具体类型的默认值代替
           Some((Coalesce(Seq(r, Literal.default(r.dataType))),
             Coalesce(Seq(l, Literal.default(l.dataType)))))
         case other => None
       }
+
+      // 其他非EqualTo或EqualNullSafe的连接条件
       val otherPredicates = predicates.filterNot {
+        // 左右表达式中有一个的属性集为空的EqualTo，保留
         case EqualTo(l, r) if l.references.isEmpty || r.references.isEmpty => false
+
+        // 可以从左右节点计算得到表达式的EqualTo，排除
         case EqualTo(l, r) =>
           canEvaluate(l, left) && canEvaluate(r, right) ||
             canEvaluate(l, right) && canEvaluate(r, left)
+
+        // 其他类型，保留
         case other => false
       }
 
       if (joinKeys.nonEmpty) {
+        // 将整理好的连接键和条件返回
         val (leftKeys, rightKeys) = joinKeys.unzip
         logDebug(s"leftKeys:$leftKeys | rightKeys:$rightKeys")
         Some((joinType, leftKeys, rightKeys, otherPredicates.reduceOption(And), left, right))

@@ -118,6 +118,22 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
    * - BroadcastNestedLoopJoin: if one side of the join could be broadcasted
    * - CartesianProduct: for Inner join
    * - BroadcastNestedLoopJoin
+   *
+   * 根据Join的连接key、和左右表大小，选择可能的物理执行计划。
+   *
+   * 首先，使用 [[ExtractEquiJoinKeys]] 模式查找至少可以通过匹配连接键评估某些谓词的连接。
+   * 如果找到，则按照以下优先级选择 Join 实现：
+   *
+   * - Broadcast：如果连接的一侧的估计物理大小小于用户可配置的 [[SQLConf.AUTO_BROADCASTJOIN_THRESHOLD]] 阈值，
+   *              或者如果该侧具有显式广播提示（例如，用户应用了 [[org.apache.spark.sql.functions.broadcast()]] 函数到一个数据帧），
+   *              那么这一侧的表将被广播，另一侧将被作为探测表，没有shuffle操作。 如果加入的双方都有资格被广播，那么
+   * - Shuffle hash join：如果单个分区的平均大小足够小，可以用于构建Hash Map。
+   * - Sort merge：如果连接键是排序的。
+   *
+   * 如果不存在连接键，Join的实现将依照下面的顺序选择：
+   * - BroadcastNestedLoopJoin：如果有一侧的表可以被广播。
+   * - CartesianProduct：Inner Join适用
+   * - BroadcastNestedLoopJoin
    */
   object JoinSelection extends Strategy with PredicateHelper {
 
@@ -169,11 +185,25 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
       // --- BroadcastHashJoin --------------------------------------------------------------------
 
+      /**
+       * - 等值Join
+       * - 右表可构建
+       * - 右表可广播
+       *
+       * => BroadcastHashJoinExec(..., BuildRight, ...)
+       */
       case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right)
         if canBuildRight(joinType) && canBroadcast(right) =>
         Seq(joins.BroadcastHashJoinExec(
           leftKeys, rightKeys, joinType, BuildRight, condition, planLater(left), planLater(right)))
 
+      /**
+       * - 等值Join
+       * - 左表可构建
+       * - 左表可广播
+       *
+       * => BroadcastHashJoinExec(..., BuildLeft, ...)
+       */
       case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right)
         if canBuildLeft(joinType) && canBroadcast(left) =>
         Seq(joins.BroadcastHashJoinExec(
@@ -181,6 +211,18 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
       // --- ShuffledHashJoin ---------------------------------------------------------------------
 
+      /**
+       * - 等值Join
+       * - spark.sql.join.preferSortMergeJoin参数为false
+       * - 可构建右表
+       * - 右表可构建为本地HashMap
+       * - 右表比左表小很多
+       *
+       * 或者：
+       * - 左表的连接键不要求有序性
+       *
+       * => ShuffledHashJoinExec(..., BuildRight, ...)
+       */
       case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right)
          if !conf.preferSortMergeJoin && canBuildRight(joinType) && canBuildLocalHashMap(right)
            && muchSmaller(right, left) ||
@@ -188,6 +230,18 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
         Seq(joins.ShuffledHashJoinExec(
           leftKeys, rightKeys, joinType, BuildRight, condition, planLater(left), planLater(right)))
 
+      /**
+       * - 等值Join
+       * - spark.sql.join.preferSortMergeJoin参数为false
+       * - 可构建左表
+       * - 左表可构建为本地HashMap
+       * - 左表比右表小很多
+       *
+       * 或者：
+       * - 左表的连接键不要求有序性
+       *
+       * => ShuffledHashJoinExec(..., BuildLeft, ...)
+       */
       case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right)
          if !conf.preferSortMergeJoin && canBuildLeft(joinType) && canBuildLocalHashMap(left)
            && muchSmaller(left, right) ||
@@ -197,6 +251,11 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
 
       // --- SortMergeJoin ------------------------------------------------------------
 
+      /**
+       * - 等值Join
+       * - 左表的连接键要求有序性
+       * => SortMergeJoinExec(...)
+       */
       case ExtractEquiJoinKeys(joinType, leftKeys, rightKeys, condition, left, right)
         if RowOrdering.isOrderable(leftKeys) =>
         joins.SortMergeJoinExec(
@@ -205,19 +264,48 @@ abstract class SparkStrategies extends QueryPlanner[SparkPlan] {
       // --- Without joining keys ------------------------------------------------------------
 
       // Pick BroadcastNestedLoopJoin if one side could be broadcasted
+      // 如果一侧可以广播，则使用BroadcastNestedLoopJoin。
+
+      /**
+       * - 可以是等值Join也可以是非等值Join
+       * - 右表可构建
+       * - 右表可广播
+       *
+       * => BroadcastNestedLoopJoinExec(..., BuildRight, ...)
+       */
       case j @ logical.Join(left, right, joinType, condition)
           if canBuildRight(joinType) && canBroadcast(right) =>
         joins.BroadcastNestedLoopJoinExec(
           planLater(left), planLater(right), BuildRight, joinType, condition) :: Nil
+
+      /**
+       * - 可以是等值Join也可以是非等值Join
+       * - 左表可构建
+       * - 左表可广播
+       *
+       * => BroadcastNestedLoopJoinExec(..., BuildLeft, ...)
+       */
       case j @ logical.Join(left, right, joinType, condition)
           if canBuildLeft(joinType) && canBroadcast(left) =>
         joins.BroadcastNestedLoopJoinExec(
           planLater(left), planLater(right), BuildLeft, joinType, condition) :: Nil
 
       // Pick CartesianProduct for InnerJoin
+      /**
+       * - InnerLike Join：Inner Join或Cross Join
+       * => CartesianProductExec
+       */
       case logical.Join(left, right, _: InnerLike, condition) =>
         joins.CartesianProductExec(planLater(left), planLater(right), condition) :: Nil
 
+      /**
+       * - 可以是等值Join也可以是非等值Join
+       * - 右表比左表小很多
+       * => BroadcastNestedLoopJoinExec(..., BuildRight, ...)
+       *
+       * - 左表比右表小很多
+       * => BroadcastNestedLoopJoinExec(..., BuildLeft, ...)
+       */
       case logical.Join(left, right, joinType, condition) =>
         val buildSide =
           if (right.statistics.sizeInBytes <= left.statistics.sizeInBytes) {

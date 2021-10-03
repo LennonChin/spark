@@ -84,6 +84,15 @@ trait PredicateHelper {
    * - `canEvaluate(EqualTo(a,b), R)` returns `true`
    * - `canEvaluate(EqualTo(a,c), R)` returns `false`
    * - `canEvaluate(Literal(1), R)` returns `true` as literals CAN be evaluated on any plan
+   *
+   * 当exprs可以仅使用plan的输出列进行执行，就返回true。
+   * 此方法可用于确定何时可以在查询计划中移动表达式计算。
+   *
+   * 举个例子，考虑R(a, b)和S(c, d)之间的Join操作：
+   *
+   * - `canEvaluate(EqualTo(a,b), R)`，返回`true`
+   * - `canEvaluate(EqualTo(a,c), R)` 返回`false`
+   * - `canEvaluate(Literal(1), R)` 返回 `true`，因为字面量可以在任何plan上执行
    */
   protected def canEvaluate(expr: Expression, plan: LogicalPlan): Boolean =
     expr.references.subsetOf(plan.outputSet)

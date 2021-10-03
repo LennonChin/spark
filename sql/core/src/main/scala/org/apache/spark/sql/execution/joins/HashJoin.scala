@@ -90,20 +90,18 @@ trait HashJoin {
 
   // 用来判断一行数据是否满足Join条件。
   @transient private[this] lazy val boundCondition = if (condition.isDefined) {
+    // 生成Predicate，第一个参数是条件，第二个参数是输入列的属性Schema
     newPredicate(condition.get, streamedPlan.output ++ buildPlan.output).eval _
   } else {
     (r: InternalRow) => true
   }
 
 
-  /**
-   * 当Join类型为LeftExistence时，创建的Projection的schema和output相同；
-   * 否则，采用的schema为streamedPlan的输出加上buildPlan的输出。
-   */
+  // Join结果行的Projection
   protected def createResultProjection(): (InternalRow) => InternalRow = joinType match {
-    case LeftExistence(_) =>
+    case LeftExistence(_) => // 当Join类型为LeftExistence时，创建的Projection的输入列schema和output相同；
       UnsafeProjection.create(output, output)
-    case _ =>
+    case _ => // 否则，采用的输入列schema为streamedPlan的输出加上buildPlan的输出。
       // Always put the stream side on left to simplify implementation
       // both of left and right side could be null
       UnsafeProjection.create(
@@ -114,12 +112,21 @@ trait HashJoin {
   private def innerJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = { // hashedRelation构建表，起到HashMap的作用
+    // 每次迭代返回的组合行
     val joinRow = new JoinedRow
+
+    // 用于生成探测的连接键的Projection
     val joinKeys = streamSideKeyGenerator()
+
+    // 遍历Stream表的数据
     streamIter.flatMap { srow =>
+      // Inner Join左表输出都是需要的
       joinRow.withLeft(srow)
-      val matches = hashedRelation.get(joinKeys(srow)) // 从构建表中获取key对应的行
+
+      // 从构建表中根据连接键找相同的行
+      val matches = hashedRelation.get(joinKeys(srow))
       if (matches != null) {
+        // 能找到可连接的行，先将构建表里的行的列添加到JoinedRow里，再进行条件过滤
         matches.map(joinRow.withRight(_)).filter(boundCondition)
       } else {
         Seq.empty
@@ -131,31 +138,54 @@ trait HashJoin {
   private def outerJoin(
       streamedIter: Iterator[InternalRow],
     hashedRelation: HashedRelation): Iterator[InternalRow] = { // hashedRelation构建表，起到HashMap的作用
+    // 每次迭代返回的组合行
     val joinedRow = new JoinedRow()
+
+    // 用于生成探测的连接键的Projection
     val keyGenerator = streamSideKeyGenerator()
+
+    // 构建表需要填充为Null的行的通用InternalRow对象
     val nullRow = new GenericInternalRow(buildPlan.output.length)
 
     streamedIter.flatMap { currentRow =>
+
+      // Projection生成连接的键
       val rowKey = keyGenerator(currentRow)
+
+      // Inner Join左表输出都是需要的
       joinedRow.withLeft(currentRow)
-      val buildIter = hashedRelation.get(rowKey) // 从构建表中获取key对应的行
+
+      // 从构建表中根据连接键找相同的行
+      val buildIter = hashedRelation.get(rowKey)
+
       new RowIterator {
         private var found = false
+
+        // 由于Outer Join中，没匹配上时，流式表数据也需要保留，所以构建特殊的迭代器
         override def advanceNext(): Boolean = {
+
+          // 判断从构建表是否匹配到行了，如果匹配到了就进行迭代
           while (buildIter != null && buildIter.hasNext) {
+
+            // 获取从构建表匹配到的行
             val nextBuildRow = buildIter.next()
+
+            // 判断是否满足连接条件，如果满足就将found置为true，并返回true
             if (boundCondition(joinedRow.withRight(nextBuildRow))) {
               found = true
               return true
             }
           }
-          if (!found) {
+          if (!found) { // found为false，说明右表未匹配到，此时右表的列需要置Null
+            // 将右表的列全部置为Null
             joinedRow.withRight(nullRow)
             found = true
             return true
           }
           false
         }
+
+        // 每次获取的都是joinedRow这个属性
         override def getRow: InternalRow = joinedRow
       }.toScala
     }
@@ -165,11 +195,25 @@ trait HashJoin {
   private def semiJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = { // hashedRelation构建表，起到HashMap的作用
+
+    // 用于生成探测的连接键的Projection
     val joinKeys = streamSideKeyGenerator()
+
+    // 每次迭代返回的组合行
     val joinedRow = new JoinedRow
-    streamIter.filter { current =>
+
+    streamIter.filter { current => // 这里用的是过滤，即结果行中不会携带任何右表的数据
+
+      // Projection生成连接的键
       val key = joinKeys(current)
-      lazy val buildIter = hashedRelation.get(key) // 从构建表中获取key对应的行
+
+      // 从构建表中根据连接键找相同的行
+      lazy val buildIter = hashedRelation.get(key)
+
+      /**
+       * 前提条件：连接键为Null且能够从构建表匹配到数据。
+       * 如果condition条件为空，或者匹配到的构建表里的数据满足条件，则保留流式表中的该行
+       */
       !key.anyNull && buildIter != null && (condition.isEmpty || buildIter.exists {
         (row: InternalRow) => boundCondition(joinedRow(current, row))
       })
@@ -180,16 +224,37 @@ trait HashJoin {
   private def existenceJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = { // hashedRelation构建表，起到HashMap的作用
+
+    // 用于生成探测的连接键的Projection
     val joinKeys = streamSideKeyGenerator()
+
+
     val result = new GenericInternalRow(Array[Any](null))
+
+    // 每次迭代返回的组合行
     val joinedRow = new JoinedRow
+
+    // 遍历Stream表的行
     streamIter.map { current =>
+
+      // Projection生成连接的键
       val key = joinKeys(current)
-      lazy val buildIter = hashedRelation.get(key) // 从构建表中获取key对应的行
+
+      // 从构建表中根据连接键找相同的行
+      lazy val buildIter = hashedRelation.get(key)
+
+      /**
+       * 连接键不为空，且能够从构建表匹配到数据。
+       * 如果condition条件为空，或者匹配到的构建表里的数据满足条件，则保留流式表中的该行
+       */
       val exists = !key.anyNull && buildIter != null && (condition.isEmpty || buildIter.exists {
         (row: InternalRow) => boundCondition(joinedRow(current, row))
       })
+
+      // 将result行的第0列设置为是否存在的标记
       result.setBoolean(0, exists)
+
+      // 返回Stream表当前行和保存有是否存在的标记的result行组成的数据行
       joinedRow(current, result)
     }
   }
@@ -198,11 +263,25 @@ trait HashJoin {
   private def antiJoin(
       streamIter: Iterator[InternalRow],
       hashedRelation: HashedRelation): Iterator[InternalRow] = { // hashedRelation构建表，起到HashMap的作用
+
+    // 用于生成探测的连接键的Projection
     val joinKeys = streamSideKeyGenerator()
+
+    // 每次迭代返回的组合行
     val joinedRow = new JoinedRow
-    streamIter.filter { current =>
+
+    streamIter.filter { current => // 这里用的是过滤，即结果行中不会携带任何右表的数据
+
+      // Projection生成连接的键
       val key = joinKeys(current)
-      lazy val buildIter = hashedRelation.get(key) // 从构建表中获取key对应的行
+
+      // 从构建表中根据连接键找相同的行
+      lazy val buildIter = hashedRelation.get(key)
+
+      /**
+       * 连接键为Null，或者无法从构建表匹配到任何数据，
+       * 或者构建表虽然能够匹配到数据，但无法满足条件，则保留流式表中的该行。
+       */
       key.anyNull || buildIter == null || (condition.isDefined && !buildIter.exists {
         row => boundCondition(joinedRow(current, row))
       })

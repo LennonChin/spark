@@ -86,6 +86,13 @@ object RowOrdering {
 
   /**
    * Returns true iff the data type can be ordered (i.e. can be sorted).
+   *
+   * - Null具有有序性。
+   * - 原子类型都具有有序性，包括：BinaryType、BooleanType、ByteType、DateType、DecimalType、DoubleType、FloatType、FractionalType、
+   *    IntegerType、IntegralType、LongType、NumericType、ShortType、StringType、TimestampType
+   * - StructType：要求所有StructField都具有有序性。
+   * - ArrayType：要求所有的元素都具有有序性。
+   * - UserDefinedType：要求自定义的SQL Type具有有序性。
    */
   def isOrderable(dataType: DataType): Boolean = dataType match {
     case NullType => true
