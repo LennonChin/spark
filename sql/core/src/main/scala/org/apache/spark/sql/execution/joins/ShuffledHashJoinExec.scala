@@ -48,11 +48,16 @@ case class ShuffledHashJoinExec(
     ClusteredDistribution(leftKeys) :: ClusteredDistribution(rightKeys) :: Nil
 
   private def buildHashedRelation(iter: Iterator[InternalRow]): HashedRelation = {
+    // 创建各类指标
     val buildDataSize = longMetric("buildDataSize")
     val buildTime = longMetric("buildTime")
     val start = System.nanoTime()
     val context = TaskContext.get()
+
+    // 构建HashedRelation对象
     val relation = HashedRelation(iter, buildKeys, taskMemoryManager = context.taskMemoryManager())
+
+    // 更新各类指标
     buildTime += (System.nanoTime() - start) / 1000000
     buildDataSize += relation.estimatedSize
     // This relation is usually used until the end of task.
@@ -62,8 +67,11 @@ case class ShuffledHashJoinExec(
 
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
+    // zip两个子节点（ShuffleExchange类型）的分区
     streamedPlan.execute().zipPartitions(buildPlan.execute()) { (streamIter, buildIter) =>
+      // 为右表构建HashedRelation
       val hashed = buildHashedRelation(buildIter)
+      // 使用父类HashJoin的join方法处理
       join(streamIter, hashed, numOutputRows)
     }
   }

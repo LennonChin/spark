@@ -56,6 +56,7 @@ case class BroadcastExchangeExec(
 
   @transient
   private val timeout: Duration = {
+    // spark.sql.broadcastTimeout，默认5分钟
     val timeoutValue = sqlContext.conf.broadcastTimeout
     if (timeoutValue < 0) {
       Duration.Inf
@@ -67,6 +68,7 @@ case class BroadcastExchangeExec(
   @transient
   private lazy val relationFuture: Future[broadcast.Broadcast[Any]] = {
     // broadcastFuture is used in "doExecute". Therefore we can get the execution id correctly here.
+    // spark.sql.execution.id
     val executionId = sparkContext.getLocalProperty(SQLExecution.EXECUTION_ID_KEY)
     Future {
       // This will run in another thread. Set the execution id so that we can connect these jobs
@@ -75,35 +77,53 @@ case class BroadcastExchangeExec(
         try {
           val beforeCollect = System.nanoTime()
           // Note that we use .executeCollect() because we don't want to convert data to Scala types
+          // collect收集子节点的所有数据
           val input: Array[InternalRow] = child.executeCollect()
+
+          // 超过512000000行不可广播
           if (input.length >= 512000000) {
             throw new SparkException(
               s"Cannot broadcast the table with more than 512 millions rows: ${input.length} rows")
           }
+
+          // 开始构建表
           val beforeBuild = System.nanoTime()
           longMetric("collectTime") += (beforeBuild - beforeCollect) / 1000000
+
+          // 统计广播前的所有数据行的大小
           val dataSize = input.map(_.asInstanceOf[UnsafeRow].getSizeInBytes.toLong).sum
           longMetric("dataSize") += dataSize
+
+          // 超过30GB不可广播
           if (dataSize >= (8L << 30)) {
             throw new SparkException(
               s"Cannot broadcast the table that is larger than 8GB: ${dataSize >> 30} GB")
           }
 
           // Construct and broadcast the relation.
+          // 使用BroadcastMode的transform方法转换数据行为特定要求的Relation
           val relation = mode.transform(input)
+
+          // 计算构建表耗费的时间
           val beforeBroadcast = System.nanoTime()
           longMetric("buildTime") += (beforeBroadcast - beforeBuild) / 1000000
 
+          // 将构建表relation进行广播
           val broadcasted = sparkContext.broadcast(relation)
+
+          // 计算广播耗时
           longMetric("broadcastTime") += (System.nanoTime() - beforeBroadcast) / 1000000
 
           // There are some cases we don't care about the metrics and call `SparkPlan.doExecute`
           // directly without setting an execution id. We should be tolerant to it.
+          // 有些情况下我们不关心指标，直接调用 `SparkPlan.doExecute` 而不设置执行 id。 我们应该容忍它。
           if (executionId != null) {
+            // 将度量指标投递到事件总线
             sparkContext.listenerBus.post(SparkListenerDriverAccumUpdates(
               executionId.toLong, metrics.values.map(m => m.id -> m.value).toSeq))
           }
 
+          // 返回广播遍历
           broadcasted
         } catch {
           case oe: OutOfMemoryError =>
@@ -128,6 +148,7 @@ case class BroadcastExchangeExec(
   }
 
   override protected[sql] def doExecuteBroadcast[T](): broadcast.Broadcast[T] = {
+    // 带有超时机制（默认5分钟），进行构建表的创建和广播
     ThreadUtils.awaitResultInForkJoinSafely(relationFuture, timeout)
       .asInstanceOf[broadcast.Broadcast[T]]
   }

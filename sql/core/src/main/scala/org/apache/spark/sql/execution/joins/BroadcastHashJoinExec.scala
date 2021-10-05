@@ -17,7 +17,7 @@
 
 package org.apache.spark.sql.execution.joins
 
-import org.apache.spark.TaskContext
+import org.apache.spark.{TaskContext, broadcast}
 import org.apache.spark.broadcast.Broadcast
 import org.apache.spark.rdd.RDD
 import org.apache.spark.sql.catalyst.InternalRow
@@ -49,11 +49,12 @@ case class BroadcastHashJoinExec(
     "numOutputRows" -> SQLMetrics.createMetric(sparkContext, "number of output rows"))
 
   override def requiredChildDistribution: Seq[Distribution] = {
+    // 使用构建表的连接键创建BroadcastMode
     val mode = HashedRelationBroadcastMode(buildKeys)
     buildSide match {
-      case BuildLeft =>
+      case BuildLeft => // 构建左表，左表上的输出需要是BroadcastDistribution
         BroadcastDistribution(mode) :: UnspecifiedDistribution :: Nil
-      case BuildRight =>
+      case BuildRight => // 构建右表，右表上的输出需要是BroadcastDistribution
         UnspecifiedDistribution :: BroadcastDistribution(mode) :: Nil
     }
   }
@@ -61,10 +62,17 @@ case class BroadcastHashJoinExec(
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
 
-    val broadcastRelation = buildPlan.executeBroadcast[HashedRelation]()
+    /**
+     * 触发构建侧BroadcastExchangeExec节点的executeBroadcast方法，创建构建好的HashedRelation对象，
+     * 并将该HashedRelation对象进行广播，得到广播变量broadcastRelation。
+     */
+    val broadcastRelation: broadcast.Broadcast[HashedRelation] = buildPlan.executeBroadcast[HashedRelation]()
     streamedPlan.execute().mapPartitions { streamedIter =>
+      // 从广播变量里得到广播的HashedRelation
       val hashed = broadcastRelation.value.asReadOnlyCopy()
+      // 维护内存峰值记录
       TaskContext.get().taskMetrics().incPeakExecutionMemory(hashed.estimatedSize)
+      // 使用父类HashJoin的join方法处理连接
       join(streamedIter, hashed, numOutputRows)
     }
   }
