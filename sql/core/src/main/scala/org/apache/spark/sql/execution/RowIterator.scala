@@ -35,12 +35,18 @@ abstract class RowIterator {
    * Advance this iterator by a single row. Returns `false` if this iterator has no more rows
    * and `true` otherwise. If this returns `true`, then the new row can be retrieved by calling
    * [[getRow]].
+   *
+   * 将Iterator向前移动一行，如果Iterator已经没有数据就返回false，
+   * 返回true时，可以通过调用getRow获取当前数据行。
    */
   def advanceNext(): Boolean
 
   /**
    * Retrieve the row from this iterator. This method is idempotent. It is illegal to call this
    * method after [[advanceNext()]] has returned `false`.
+   *
+   * 从Iterator获取当前行。这个方法是幂等的。
+   * 在advanceNext()方法返回false时，调用这个方法是非法的。
    */
   def getRow: InternalRow
 

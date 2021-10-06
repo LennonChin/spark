@@ -39,6 +39,7 @@ class UnsafeCartesianRDD(left : RDD[UnsafeRow], right : RDD[UnsafeRow], numField
 
   override def compute(split: Partition, context: TaskContext): Iterator[(UnsafeRow, UnsafeRow)] = {
     // We will not sort the rows, so prefixComparator and recordComparator are null.
+    // 使用UnsafeExternalSorter
     val sorter = UnsafeExternalSorter.create(
       context.taskMemoryManager(),
       SparkEnv.get.blockManager,
@@ -52,20 +53,25 @@ class UnsafeCartesianRDD(left : RDD[UnsafeRow], right : RDD[UnsafeRow], numField
         UnsafeExternalSorter.DEFAULT_NUM_ELEMENTS_FOR_SPILL_THRESHOLD),
       false)
 
+    // 获取对应的分区
     val partition = split.asInstanceOf[CartesianPartition]
+    // 将rdd2的分区中的数据全部插入到UnsafeExternalSorter中
     for (y <- rdd2.iterator(partition.s2, context)) {
       sorter.insertRecord(y.getBaseObject, y.getBaseOffset, y.getSizeInBytes, 0, false)
     }
 
     // Create an iterator from sorter and wrapper it as Iterator[UnsafeRow]
     def createIter(): Iterator[UnsafeRow] = {
+      // 获取UnsafeExternalSorter的迭代器
       val iter = sorter.getIterator
       val unsafeRow = new UnsafeRow(numFieldsOfRight)
       new Iterator[UnsafeRow] {
+        // 直接使用UnsafeExternalSorter的迭代器的方法
         override def hasNext: Boolean = {
           iter.hasNext
         }
         override def next(): UnsafeRow = {
+          // 直接使用UnsafeExternalSorter的迭代器载入数据
           iter.loadNext()
           unsafeRow.pointTo(iter.getBaseObject, iter.getBaseOffset, iter.getRecordLength)
           unsafeRow
@@ -94,17 +100,24 @@ case class CartesianProductExec(
   protected override def doExecute(): RDD[InternalRow] = {
     val numOutputRows = longMetric("numOutputRows")
 
+    // 直接获取左右表的数据
     val leftResults = left.execute().asInstanceOf[RDD[UnsafeRow]]
     val rightResults = right.execute().asInstanceOf[RDD[UnsafeRow]]
 
+    // 组合为UnsafeCartesianRDD
     val pair = new UnsafeCartesianRDD(leftResults, rightResults, right.output.size)
+
+    // 遍历UnsafeCartesianRDD的每个分区
     pair.mapPartitionsWithIndexInternal { (index, iter) =>
       val joiner = GenerateUnsafeRowJoiner.create(left.schema, right.schema)
       val filtered = if (condition.isDefined) {
+        // 创建连接条件的谓词
         val boundCondition = newPredicate(condition.get, left.output ++ right.output)
+        // 设置分区号
         boundCondition.initialize(index)
         val joined = new JoinedRow
 
+        // 过滤得到分区中符合连接条件的数据行
         iter.filter { r =>
           boundCondition.eval(joined(r._1, r._2))
         }

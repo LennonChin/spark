@@ -57,9 +57,13 @@ class CartesianRDD[T: ClassTag, U: ClassTag](
 
   override def getPartitions: Array[Partition] = {
     // create the cross product split
+    // 分区数量 = rdd1的分区数量 乘以 rdd2的分区数量
     val array = new Array[Partition](rdd1.partitions.length * rdd2.partitions.length)
+
+    // 遍历两个rdd的分区
     for (s1 <- rdd1.partitions; s2 <- rdd2.partitions) {
       val idx = s1.index * numPartitionsInRdd2 + s2.index
+      // 每个分区都是一个CartesianPartition实例，记录了两个rdd和对应的分区索引
       array(idx) = new CartesianPartition(idx, rdd1, rdd2, s1.index, s2.index)
     }
     array
@@ -71,7 +75,9 @@ class CartesianRDD[T: ClassTag, U: ClassTag](
   }
 
   override def compute(split: Partition, context: TaskContext): Iterator[(T, U)] = {
+    // 将当前的分区转换为CartesianPartition
     val currSplit = split.asInstanceOf[CartesianPartition]
+    // 双层循环迭代，产生两个RDD每条数据的笛卡尔积元组
     for (x <- rdd1.iterator(currSplit.s1, context);
          y <- rdd2.iterator(currSplit.s2, context)) yield (x, y)
   }
