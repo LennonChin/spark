@@ -1352,18 +1352,24 @@ case class CheckCartesianProducts(conf: CatalystConf)
   /**
    * Check if a join is a cartesian product. Returns true if
    * there are no join conditions involving references from both left and right.
+   *
+   * 检查是否是笛卡尔积
    */
   def isCartesianProduct(join: Join): Boolean = {
+    // 获取Join条件
     val conditions = join.condition.map(splitConjunctivePredicates).getOrElse(Nil)
+    // 如果没有与左右表输出的列相关的Join条件，说明是笛卡尔积
     !conditions.map(_.references).exists(refs => refs.exists(join.left.outputSet.contains)
         && refs.exists(join.right.outputSet.contains))
   }
 
   def apply(plan: LogicalPlan): LogicalPlan =
-    if (conf.crossJoinEnabled) {
+    if (conf.crossJoinEnabled) { // spark.sql.crossJoin.enabled，默认值为false，也即是不允许笛卡尔积
       plan
     } else plan transform {
+      // 匹配Join节点
       case j @ Join(left, right, Inner | LeftOuter | RightOuter | FullOuter, condition)
+        // 判断如果是笛卡尔积，就抛出异常
         if isCartesianProduct(j) =>
           throw new AnalysisException(
             s"""Detected cartesian product for ${j.joinType.sql} join between logical plans
@@ -1448,6 +1454,7 @@ object ConvertToLocalRelation extends Rule[LogicalPlan] {
  */
 object ReplaceDistinctWithAggregate extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
+    // Distinct -> Aggregate
     case Distinct(child) => Aggregate(child.output, child.output, child)
   }
 }
@@ -1469,6 +1476,7 @@ object ReplaceIntersectWithSemiJoin extends Rule[LogicalPlan] {
     case Intersect(left, right) =>
       assert(left.output.size == right.output.size)
       val joinCond = left.output.zip(right.output).map { case (l, r) => EqualNullSafe(l, r) }
+      // Intersect -> Left Semi Join + Distinct
       Distinct(Join(left, right, LeftSemi, joinCond.reduceLeftOption(And)))
   }
 }
@@ -1490,6 +1498,7 @@ object ReplaceExceptWithAntiJoin extends Rule[LogicalPlan] {
     case Except(left, right) =>
       assert(left.output.size == right.output.size)
       val joinCond = left.output.zip(right.output).map { case (l, r) => EqualNullSafe(l, r) }
+      // Except -> Left Anti Join + Distinct
       Distinct(Join(left, right, LeftAnti, joinCond.reduceLeftOption(And)))
   }
 }
@@ -1497,10 +1506,13 @@ object ReplaceExceptWithAntiJoin extends Rule[LogicalPlan] {
 /**
  * Removes literals from group expressions in [[Aggregate]], as they have no effect to the result
  * but only makes the grouping key bigger.
+ *
+ * 删除Group by表达式中的常数项。
  */
 object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case a @ Aggregate(grouping, _, _) if grouping.nonEmpty =>
+      // 将不可折叠的分组表达式过滤出来
       val newGrouping = grouping.filter(!_.foldable)
       if (newGrouping.nonEmpty) {
         a.copy(groupingExpressions = newGrouping)
@@ -1516,10 +1528,13 @@ object RemoveLiteralFromGroupExpressions extends Rule[LogicalPlan] {
 /**
  * Removes repetition from group expressions in [[Aggregate]], as they have no effect to the result
  * but only makes the grouping key bigger.
+ *
+ * 删除Group By中重复的表达式。
  */
 object RemoveRepetitionFromGroupExpressions extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case a @ Aggregate(grouping, _, _) =>
+      // 使用ExpressionSet去重
       val newGrouping = ExpressionSet(grouping).toSeq
       a.copy(groupingExpressions = newGrouping)
   }

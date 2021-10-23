@@ -317,7 +317,9 @@ case class IsNotNull(child: Expression) extends UnaryExpression with Predicate {
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 获取子节点的代码
     val eval = child.genCode(ctx)
+    // 构造ExprCode返回
     ExprCode(code = eval.code, isNull = "false", value = s"(!(${eval.isNull}))")
   }
 

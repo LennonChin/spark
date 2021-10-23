@@ -186,7 +186,7 @@ class DAGScheduler(
    *
    * All accesses to this map should be guarded by synchronizing on it (see SPARK-4454).
     *
-    * 缓存每个RDD的所有分区的位置信息。
+    * 缓存每个RDD的所有分区的缓存位置信息。
     * Map的键是RDD的ID，值是RDD分区信息序列，RDD多个分区的信息顺序存储在IndexedSeq类型值中，
     * 而每个分区存在多个TaskLocation信息，因此每个分区的信息其实是一个Seq[TaskLocation]序列，结构示意图如下：
     *

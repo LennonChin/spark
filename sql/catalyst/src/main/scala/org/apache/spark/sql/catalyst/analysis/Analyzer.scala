@@ -127,7 +127,7 @@ class Analyzer(
       ResolveNaturalAndUsingJoin :: // 解析自然Join
       ExtractWindowExpressions :: // 提取窗口函数表达式
       GlobalAggregates :: // 解析全局聚合
-      ResolveAggregateFunctions :: // 解析式聚合函数
+      ResolveAggregateFunctions :: // 解析聚合函数
       TimeWindowing :: // 解析时间窗口
       ResolveInlineTables :: // 解析内联表
       TypeCoercion.typeCoercionRules ++ // 解析强制类型转换
@@ -1529,6 +1529,9 @@ class Analyzer(
     /**
      * Resolve and rewrite all subqueries in a LogicalPlan. This method transforms IN and EXISTS
      * expressions into PredicateSubquery expression once the are resolved.
+     *
+     * 解析和重写逻辑计划中所有的子查询。
+     * 该方法会转换IN和EXISTS表达式为PredicateSubquery表达式。
      */
     private def resolveSubQueries(plan: LogicalPlan, plans: Seq[LogicalPlan]): LogicalPlan = {
       plan transformExpressions {
@@ -1556,9 +1559,11 @@ class Analyzer(
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
       // In case of HAVING (a filter after an aggregate) we use both the aggregate and
       // its child for resolution.
+      // HAVING操作被定义为聚合后的过滤，这种情况使用聚合及聚合子节点做解析
       case f @ Filter(_, a: Aggregate) if f.childrenResolved =>
         resolveSubQueries(f, Seq(a, a.child))
       // Only a few unary nodes (Project/Filter/Aggregate) can contain subqueries.
+      // 只有Project、Filter、Aggregate节点才会包含子查询
       case q: UnaryNode if q.childrenResolved =>
         resolveSubQueries(q, q.children)
     }
@@ -1566,15 +1571,19 @@ class Analyzer(
 
   /**
    * Turns projections that contain aggregate expressions into aggregations.
+   * 将包含全局聚合函数的Projection转换为Aggregation
    */
   object GlobalAggregates extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan resolveOperators {
+      // 提取Project列中的全局聚合函数，转换为Aggregate列表
       case Project(projectList, child) if containsAggregates(projectList) =>
         Aggregate(Nil, projectList, child)
     }
 
+    // 判断是否包含全局聚合函数
     def containsAggregates(exprs: Seq[Expression]): Boolean = {
       // Collect all Windowed Aggregate Expressions.
+      // 提取所有窗口函数里的聚合函数
       val windowedAggExprs = exprs.flatMap { expr =>
         expr.collect {
           case WindowExpression(ae: AggregateExpression, _) => ae
@@ -1582,6 +1591,7 @@ class Analyzer(
       }.toSet
 
       // Find the first Aggregate Expression that is not Windowed.
+      // 找到第一个不是作用在窗口上的聚合函数
       exprs.exists(_.collectFirst {
         case ae: AggregateExpression if !windowedAggExprs.contains(ae) => ae
       }.isDefined)
@@ -2251,10 +2261,12 @@ class Analyzer(
   object ResolveWindowOrder extends Rule[LogicalPlan] {
     def apply(plan: LogicalPlan): LogicalPlan = plan transform {
       case logical: LogicalPlan => logical transformExpressions {
+        // 对于CumeDist、DenseRank、Lag、Lead、NTile、PercentRank、Rank、RowNumber都要求窗口需要排序
         case WindowExpression(wf: WindowFunction, spec) if spec.orderSpec.isEmpty =>
           failAnalysis(s"Window function $wf requires window to be ordered, please add ORDER BY " +
             s"clause. For example SELECT $wf(value_expr) OVER (PARTITION BY window_partition " +
             s"ORDER BY window_ordering) from table")
+        // 将排序操作的表达式提取出来，作为窗口函数的表达式列表
         case WindowExpression(rank: RankLike, spec) if spec.resolved =>
           val order = spec.orderSpec.map(_.child)
           WindowExpression(rank.withOrder(order), spec)

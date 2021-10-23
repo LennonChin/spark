@@ -115,16 +115,27 @@ object ReorderAssociativeOperator extends Rule[LogicalPlan] {
  * 1. Removes literal repetitions.
  * 2. Replaces [[In (value, seq[Literal])]] with optimized version
  *    [[InSet (value, HashSet[Literal])]] which is much faster.
+ *
+ * 优化IN谓词：
+ * 1. 移除重复的字面量。
+ * 2. 替换 [[In (value, seq[Literal])]] 为 [[InSet (value, HashSet[Literal])]]，
+ *    InSet对IN子查询的内的集合做了去重，使用HashSet代替，以提升性能。
  */
 case class OptimizeIn(conf: CatalystConf) extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case q: LogicalPlan => q transformExpressionsDown {
-      case expr @ In(v, list) if expr.inSetConvertible =>
+      // 匹配In表达式，v是IN的outer expr，list是IN的inner expr
+      case expr @ In(v, list) if expr.inSetConvertible => // 需要inner expr中所有的值都是字面量
+
+        // 将list转为ExpressionSet
         val newList = ExpressionSet(list).toSeq
-        if (newList.size > conf.optimizerInSetConversionThreshold) {
+
+        // 判断Expression数量是否大于阈值
+        if (newList.size > conf.optimizerInSetConversionThreshold) { // spark.sql.optimizer.inSetConversionThreshold，默认10
+          // 使用空行计算
           val hSet = newList.map(e => e.eval(EmptyRow))
           InSet(v, HashSet() ++ hSet)
-        } else if (newList.size < list.size) {
+        } else if (newList.size < list.size) { // 有去除重复的inner expr项
           expr.copy(list = newList)
         } else { // newList.length == list.length
           expr

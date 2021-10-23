@@ -195,9 +195,16 @@ class CodegenContext {
   def initMutableStates(): String = {
     // It's possible that we add same mutable state twice, e.g. the `mergeExpressions` in
     // `TypedAggregateExpression`, we should call `distinct` here to remove the duplicated ones.
+    /**
+     * 先对mutableStates中的属性去重，然后获得所有属性的初始化代码段。
+     */
     val initCodes = mutableStates.distinct.map(_._3 + "\n")
     // The generated initialization code may exceed 64kb function size limit in JVM if there are too
     // many mutable states, so split it into multiple functions.
+    /**
+     * 生成的初始化代码的字节码可能会由于属性太多而超过JVM中64KB的函数大小限制，
+     * 因此会将属性初始化过程切分到多个函数中。
+     */
     splitExpressions(initCodes, "init", Nil)
   }
 
@@ -267,11 +274,16 @@ class CodegenContext {
   final val JAVA_FLOAT = "float"
   final val JAVA_DOUBLE = "double"
 
-  /** The variable name of the input row in generated code. */
+  /** The variable name of the input row in generated code.
+   *
+   * 输入行默认属性名为i
+   **/
   final var INPUT_ROW = "i"
 
   /**
    * The map from a variable name to it's next ID.
+   *
+   * 记录属性名与对应ID的映射
    */
   private val freshNameIds = new mutable.HashMap[String, Int]
   freshNameIds += INPUT_ROW -> 1
@@ -291,16 +303,21 @@ class CodegenContext {
    * 与类型为HashMap[String, Int]的freshNameIds配合，用来生成具有唯一ID的变量名
    */
   def freshName(name: String): String = synchronized {
+    // 如有前缀就加上前缀
     val fullName = if (freshNamePrefix == "") {
       name
     } else {
       s"${freshNamePrefix}_$name"
     }
+
+    // 判断在freshNameIds中是否存在同名
     if (freshNameIds.contains(fullName)) {
+      // 存在同名时将ID自增 + 1
       val id = freshNameIds(fullName)
       freshNameIds(fullName) = id + 1
       s"$fullName$id"
     } else {
+      // 不存在同名则直接添加
       freshNameIds += fullName -> 1
       fullName
     }
@@ -626,7 +643,7 @@ class CodegenContext {
    * Generates code to do null safe execution, i.e. only execute the code when the input is not
    * null by adding null check if necessary.
    *
-   * 对通常的代码添加null检测的逻辑。
+   * 对代码段添加null检测的逻辑。
    *
    * @param nullable used to decide whether we should add null check or not.
    * @param isNull the code to check if the input is null.
@@ -676,12 +693,20 @@ class CodegenContext {
       expressions: Seq[String], funcName: String, arguments: Seq[(String, String)]): String = {
     val blocks = new ArrayBuffer[String]()
     val blockBuilder = new StringBuilder()
+
+    // 遍历所有的代码表达式段
     for (code <- expressions) {
       // We can't know how many bytecode will be generated, so use the length of source code
       // as metric. A method should not go beyond 8K, otherwise it will not be JITted, should
       // also not be too small, or it will have many function calls (for wide table), see the
       // results in BenchmarkWideTable.
-      if (blockBuilder.length > 1024) {
+      /**
+       * 我们无法知道多少字节代码会生成，因此使用源代码的长度来作为度量指标。
+       * 一个方法的代码长度不会超过8K，否则将不会被JIT编译，
+       * 也不能太小，否则会有很多函数调用（对于宽表），见BenchmarkWideTable中的结果。
+       */
+      if (blockBuilder.length > 1024) { // 代码段长度每到1024个字符（即8K）就切分为一个代码块
+        // 新切分的代码块添加到blocks数组中
         blocks += blockBuilder.toString()
         blockBuilder.clear()
       }
@@ -693,14 +718,20 @@ class CodegenContext {
       // inline execution if only one block
       blocks.head
     } else {
+      // 有多个代码块，获取函数名，freshName会为重名方法添加ID标识
       val func = freshName(funcName)
+
+      // 遍历所有代码块，生成特定具体的方法代码
       val functions = blocks.zipWithIndex.map { case (body, i) =>
+        // 会在函数名后添加index
         val name = s"${func}_$i"
         val code = s"""
+           |// Code split by org.apache.spark.sql.catalyst.expressions.codegen.CodegenContext.splitExpressions
            |private void $name(${arguments.map { case (t, name) => s"$t $name" }.mkString(", ")}) {
            |  $body
            |}
          """.stripMargin
+        // 将生成的函数代码添加到addedFunctions字典中
         addNewFunction(name, code)
         name
       }
@@ -856,6 +887,8 @@ class CodegenContext {
 /**
  * A wrapper for generated class, defines a `generate` method so that we can pass extra objects
  * into generated class.
+ *
+ * 生成类的包装，定义了一个generate方法，可以传入额外的对象到这个生成类中
  */
 abstract class GeneratedClass {
   def generate(references: Array[Any]): Any
@@ -863,6 +896,8 @@ abstract class GeneratedClass {
 
 /**
  * A wrapper for the source code to be compiled by [[CodeGenerator]].
+ *
+ * 对提供给CodeGenerator做编译的源代码进行包装
  */
 class CodeAndComment(val body: String, val comment: collection.Map[String, String])
   extends Serializable {
@@ -893,16 +928,24 @@ abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Loggin
   /**
    * Generates a class for a given input expression.  Called when there is not cached code
    * already available.
+   *
+   * 对输入的表达式生成一个类。
+   * 当没有缓存代码可用时才会被调用
    */
   protected def create(in: InType): OutType
 
   /**
    * Canonicalizes an input expression. Used to avoid double caching expressions that differ only
    * cosmetically.
+   *
+   * 对输入表达式进行标准化处理。
+   * 用于避免由于外观不同导致对表达式做重复缓存。
    */
   protected def canonicalize(in: InType): InType
 
-  /** Binds an input expression to a given input schema */
+  /** Binds an input expression to a given input schema
+   * 将输入表达式绑定到给定的输入Schema上。
+   **/
   protected def bind(in: InType, inputSchema: Seq[Attribute]): InType
 
   /**
@@ -923,6 +966,9 @@ abstract class CodeGenerator[InType <: AnyRef, OutType <: AnyRef] extends Loggin
   /**
    * Create a new codegen context for expression evaluator, used to store those
    * expressions that don't support codegen
+   *
+   * 为表达式执行器创建一个新的CodegenContext，
+   * 用于存放支持Codegen的表达式
    */
   def newCodeGenContext(): CodegenContext = {
     new CodegenContext
@@ -936,11 +982,13 @@ object CodeGenerator extends Logging {
    * GeneratedClass仅仅起到封装生成类的作用，在具体应用时会调用generate方法显示地强制转换得到生成的类。
    */
   def compile(code: CodeAndComment): GeneratedClass = {
+    // 尝试从缓存中获取，缓存中没有取到则会编译
     cache.get(code)
   }
 
   /**
    * Compile the Java source code into a Java class, using Janino.
+   * 编译Java源代码为Java类，使用Janino
    */
   private[this] def doCompile(code: CodeAndComment): GeneratedClass = {
     val evaluator = new ClassBodyEvaluator()
@@ -953,10 +1001,21 @@ object CodeGenerator extends Logging {
     // find other possible classes (see org.codehaus.janinoClassLoaderIClassLoader's
     // findIClass method). Please also see https://issues.apache.org/jira/browse/SPARK-15622 and
     // https://issues.apache.org/jira/browse/SPARK-11636.
+    /**
+     * 一个特殊的类加载器，用于包装 [[org.codehaus.janino.ClassBodyEvaluator]] 的实际父类加载器（参见 CodeGenerator.doCompile）。
+     * 此类加载器不会抛出带有原因集的 ClassNotFoundException（即 exception.getCause 返回 null）。
+     * 这个类加载器是必需的，因为如果父类加载器抛出一个 ClassNotFoundException 并设置了原因，而不是试图找到其他可能的类，
+     * 那么 janino 将直接抛出异常（请参阅 org.codehaus.janinoClassLoaderIClassLoader 的 findIClass 方法）。
+     * 另请参阅 https://issues.apache.org/jira/browse/SPARK-15622 和 https://issues.apache.org/jira/browse/SPARK-11636。
+     */
     val parentClassLoader = new ParentClassLoader(Utils.getContextOrSparkClassLoader)
     evaluator.setParentClassLoader(parentClassLoader)
+
     // Cannot be under package codegen, or fail with java.lang.InstantiationException
+    // 不能在codegen包下生成代码，否则会抛出java.lang.InstantiationException
     evaluator.setClassName("org.apache.spark.sql.catalyst.expressions.GeneratedClass")
+
+    // 导入所需的类
     evaluator.setDefaultImports(Array(
       classOf[Platform].getName,
       classOf[InternalRow].getName,
@@ -970,10 +1029,14 @@ object CodeGenerator extends Logging {
       classOf[UnsafeMapData].getName,
       classOf[Expression].getName
     ))
+
+    // 统一继承自GeneratedClass
     evaluator.setExtendedClass(classOf[GeneratedClass])
 
+    // 格式化代码
     lazy val formatted = CodeFormatter.format(code)
 
+    // Debug信息
     logDebug({
       // Only add extra debugging info to byte code when we are going to print the source code.
       evaluator.setDebuggingInformation(true, true, false)
@@ -981,7 +1044,10 @@ object CodeGenerator extends Logging {
     })
 
     try {
+      // 编译代码
       evaluator.cook("generated.java", code.body)
+
+      // 记录编译状态相关的度量指标
       recordCompilationStats(evaluator)
     } catch {
       case e: Exception =>
@@ -989,33 +1055,53 @@ object CodeGenerator extends Logging {
         logError(msg, e)
         throw new Exception(msg, e)
     }
+
+    // 创建编译类的实例
     evaluator.getClazz().newInstance().asInstanceOf[GeneratedClass]
   }
 
   /**
    * Records the generated class and method bytecode sizes by inspecting janino private fields.
+   *
+   * 通过检查 janino 私有字段记录生成的类和方法字节码大小，更新相关的度量指标。
    */
   private def recordCompilationStats(evaluator: ClassBodyEvaluator): Unit = {
     // First retrieve the generated classes.
+    // 反射获取evaluator中result属性（ByteArrayClassLoader）的classes属性（Map<String /*className*/, byte[] /*data*/>）
     val classes = {
+      // 反射获取ClassBodyEvaluator类中的result字段，SimpleCompiler是ClassBodyEvaluator的父类
       val resultField = classOf[SimpleCompiler].getDeclaredField("result")
       resultField.setAccessible(true)
+
+      // 获取evaluator中的result字段，是一个ByteArrayClassLoader类型的类加载器
       val loader = resultField.get(evaluator).asInstanceOf[ByteArrayClassLoader]
+
+      // 反射获取该类加载器中的classes字段，是一个Map<String /*className*/, byte[] /*data*/>类型的字典
       val classesField = loader.getClass.getDeclaredField("classes")
       classesField.setAccessible(true)
       classesField.get(loader).asInstanceOf[JavaMap[String, Array[Byte]]].asScala
     }
 
     // Then walk the classes to get at the method bytecode.
+    // 反射ClassFile$CodeAttribute的code字段
     val codeAttr = Utils.classForName("org.codehaus.janino.util.ClassFile$CodeAttribute")
     val codeAttrField = codeAttr.getDeclaredField("code")
     codeAttrField.setAccessible(true)
+
+    // 遍历Map<String /*className*/, byte[] /*data*/>字典
     classes.foreach { case (_, classBytes) =>
+      // 更新类字节码长度相关的度量值
       CodegenMetrics.METRIC_GENERATED_CLASS_BYTECODE_SIZE.update(classBytes.length)
+
       try {
+        // 将类字节码数据构造为ClassFile文件
         val cf = new ClassFile(new ByteArrayInputStream(classBytes))
+
+        // 遍历所有的方法信息
         cf.methodInfos.asScala.foreach { method =>
+          // 遍历方法参数
           method.getAttributes().foreach { a =>
+            // 遇到code参数，更新方法参数的度量信息
             if (a.getClass.getName == codeAttr.getName) {
               CodegenMetrics.METRIC_GENERATED_METHOD_BYTECODE_SIZE.update(
                 codeAttrField.get(a).asInstanceOf[Array[Byte]].length)
@@ -1037,16 +1123,29 @@ object CodeGenerator extends Logging {
    * they are explicitly removed. A Cache on the other hand is generally configured to evict entries
    * automatically, in order to constrain its memory footprint.  Note that this cache does not use
    * weak keys/values and thus does not respond to memory pressure.
+   *
+   * 用于缓存生成的类。
+   *
+   * 来自 Guava Docs：A Cache 类似于 ConcurrentMap，但不完全相同。
+   * 最根本的区别是 ConcurrentMap 保留所有添加到它的元素，直到它们被显式删除。
+   * 另一方面，缓存通常配置为自动驱逐条目，以限制其内存占用。
+   * 请注意，此缓存不使用弱键/值，因此不会响应内存压力。
+   *
+   * 返回的是LocalCache.LocalLoadingCache
    */
   private val cache = CacheBuilder.newBuilder()
     .maximumSize(100)
     .build(
       new CacheLoader[CodeAndComment, GeneratedClass]() {
+
+        // 缓存中未找到时，通过CodeAndComment编译类
         override def load(code: CodeAndComment): GeneratedClass = {
           val startTime = System.nanoTime()
-          // 编译代码
+          // 缓存中不存在时，调用doCompile方法编译代码
           val result = doCompile(code)
           val endTime = System.nanoTime()
+
+          // 更新相关指标
           def timeMs: Double = (endTime - startTime).toDouble / 1000000
           CodegenMetrics.METRIC_SOURCE_CODE_SIZE.update(code.body.length)
           CodegenMetrics.METRIC_COMPILATION_TIME.update(timeMs.toLong)

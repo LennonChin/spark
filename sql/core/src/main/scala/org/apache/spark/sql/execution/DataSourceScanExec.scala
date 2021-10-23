@@ -152,7 +152,9 @@ case class FileSourceScanExec(
   val supportsBatch = relation.fileFormat.supportBatch(
     relation.sparkSession, StructType.fromAttributes(output))
 
+  // 是否需要UnsafeRow转换，在源是Parquet文件，且spark.sql.parquet.enableVectorizedReader参数为true时需要
   val needsUnsafeRowConversion = if (relation.fileFormat.isInstanceOf[ParquetSource]) {
+    // spark.sql.parquet.enableVectorizedReader，默认为true
     SparkSession.getActiveSession.get.sessionState.conf.parquetVectorizedReaderEnabled
   } else {
     false
@@ -343,6 +345,8 @@ case class FileSourceScanExec(
      */
     val input = ctx.freshName("input")
     ctx.addMutableState("scala.collection.Iterator", input, s"$input = inputs[0];")
+
+    // 输出列构造为BoundReference列表
     val exprRows = output.zipWithIndex.map{ case (a, i) =>
       new BoundReference(i, a.dataType, a.nullable)
     }
@@ -362,16 +366,24 @@ case class FileSourceScanExec(
      * project person.name
      * boolean scan_isNull1 = scan_row.isNullAt(1);
      * UTF8String scan_value1 = scan_isNUll1 ? null : (scan_row.getUTF8String(1));
+     *
+     * 根据输出列的BoundReference生成ExprCode列表。
      */
     val columnsRowInput = exprRows.map(_.genCode(ctx))
+
+    // 如果需要UnsafeRow转换，此处传入的就是null
     val inputRow = if (needsUnsafeRowConversion) null else row
     s"""
+       |// [FileSourceScanExec#doProduce start]
        |while ($input.hasNext()) {
        |  InternalRow $row = (InternalRow) $input.next();
        |  $numOutputRows.add(1);
+       |
+       |  // [FileSourceScanExec#doProduce] 调用consume，此处会将当前算子输出列的ExprCode列表传入到consume方法，注意ctx复用了
        |  ${consume(ctx, columnsRowInput, inputRow).trim}
        |  if (shouldStop()) return;
        |}
+       |// [FileSourceScanExec#doProduce end]
      """.stripMargin
   }
 
@@ -404,6 +416,7 @@ case class FileSourceScanExec(
     val nextBatch = ctx.freshName("nextBatch")
     ctx.addNewFunction(nextBatch,
       s"""
+         |// [FileSourceScanExec#doProduceVectorized]
          |private void $nextBatch() throws java.io.IOException {
          |  long getBatchStart = System.nanoTime();
          |  if ($input.hasNext()) {
@@ -421,6 +434,7 @@ case class FileSourceScanExec(
       genCodeColumnVector(ctx, colVar, rowidx, attr.dataType, attr.nullable)
     }
     s"""
+       |// [FileSourceScanExec#doProduceVectorized]
        |if ($batch == null) {
        |  $nextBatch();
        |}

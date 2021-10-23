@@ -110,6 +110,9 @@ trait CodegenSupport extends SparkPlan {
    *     # call consume(), which will call parent.doConsume()
    *      if (shouldStop()) return;
    *   }
+   *
+   * 生成Java源代码，该方法需要由子类实现以支持Codegen。
+   * doProduce()一般用来生成代码框架。
    */
   protected def doProduce(ctx: CodegenContext): String
 
@@ -121,8 +124,8 @@ trait CodegenSupport extends SparkPlan {
    * 每个物理算子节点的consume方法将生成相应的代码来完成该节点的数据处理逻辑。
    * consume方法将递归调用其父节点的doConsume方法，这样正好对应了子节点处理逻辑先于父节点处理逻辑的顺序关系。
    *
-   * @param outputVars 对应列信息的变量列表（Seq[ExprCode]）
-   * @param row 表示当前数据行对应的变量（ExprCode）
+   * @param outputVars 子节点输出列的ExprCode列表（Seq[ExprCode]）
+   * @param row 表示当前数据行对应的变量（ExprCode），row为null，说明可能输入行是UnsafeRow。
    * @return
    */
   final def consume(ctx: CodegenContext, outputVars: Seq[ExprCode], row: String = null): String = {
@@ -148,33 +151,63 @@ trait CodegenSupport extends SparkPlan {
       // 如果传入的行变量不为空，则直接对应该行变量的ExprCode对象
       ExprCode("", "false", row)
     } else {
-      if (outputVars.nonEmpty) {
+      // 根据输出列决定返回的ExprCode
+      if (outputVars.nonEmpty) { // 行变量row为空，但是传入的列变量列表outputVars不为空
+
+        // 将节点原始输出构造为BoundReference列表，UnsafeProjection需要使用
         val colExprs = output.zipWithIndex.map { case (attr, i) =>
           BoundReference(i, attr.dataType, attr.nullable)
         }
+
+        /**
+         * evaluateVariables方法可以得到传入的Seq[ExprCode]中所有code不为空的ExprCode代码，
+         * 按行分隔，并将ExprCode对应的code设置为空。
+         *
+         * 因此该行代码可以获取所有输出列的代码，按行分隔。
+         */
         val evaluateInputs = evaluateVariables(outputVars)
+
         // generate the code to create a UnsafeRow
+        // 拼装创建UnsafeRow的代码
         ctx.INPUT_ROW = row
         ctx.currentVars = outputVars
+
+        // 创建产生UnsafeRow的UnsafeProjection
         val ev = GenerateUnsafeProjection.createCode(ctx, colExprs, false)
+
+        // 拼装UnsafeProjection的代码
         val code = s"""
           |$evaluateInputs
           |${ev.code.trim}
          """.stripMargin.trim
+
+        // 返回ExprCode
         ExprCode(code, "false", ev.value)
-      } else {
+      } else { // 行变量row为空，传入的列变量列表outputVars也为空，构造名为unsafeRow的ExprCode对象。
         // There is no columns
         ExprCode("", "false", "unsafeRow")
       }
     }
 
     ctx.freshNamePrefix = parent.variablePrefix // 更新Context中的Prefix为父节点的Prefix
+
+    /**
+     * evaluateRequiredVariables方法会根据所需的列集合（第三个参数，AttributeSet类型）筛选出对应的ExprCode代码，
+     * 其他操作和evaluateVariables方法中的逻辑相同。
+     *
+     * 该行代码会拼装需要用到的输出列的生成代码，按行分隔。
+     */
     val evaluated = evaluateRequiredVariables(output, inputVars, parent.usedInputs)
-    // 递归调用父节点的doConsume方法
+
+    // 递归调用父节点的doConsume方法，将代码进行拼装
     s"""
+       |// [CodegenSupport#consume start] ${this.getClass.getName}
        |${ctx.registerComment(s"CONSUME: ${parent.simpleString}")}
+       |// [CodegenSupport#consume evaluated] ${this.getClass.getName}
        |$evaluated
+       |// [CodegenSupport#consume parent.doConsume] ${parent.getClass.getName}
        |${parent.doConsume(ctx, inputVars, rowVar)}
+       |// [CodegenSupport#consume end] ${this.getClass.getName}
      """.stripMargin
   }
 
@@ -242,6 +275,9 @@ trait CodegenSupport extends SparkPlan {
  *
  * This is the leaf node of a tree with WholeStageCodegen that is used to generate code
  * that consumes an RDD iterator of InternalRow.
+ *
+ * InputAdapter 用于从支持代码生成的子树中隐藏 SparkPlan。
+ * 这是带有 WholeStageCodegen 的树的叶节点，用于生成使用 InternalRow 的 RDD 迭代器的代码。
  */
 case class InputAdapter(child: SparkPlan) extends UnaryExecNode with CodegenSupport {
 
@@ -269,11 +305,15 @@ case class InputAdapter(child: SparkPlan) extends UnaryExecNode with CodegenSupp
     ctx.addMutableState("scala.collection.Iterator", input, s"$input = inputs[0];")
     val row = ctx.freshName("row")
     s"""
+       | // [InputAdapter.doProduce start] 不断迭代输入数据
        | while ($input.hasNext()) {
+       |   // [InputAdapter.doProduce] 获取下一行数据
        |   InternalRow $row = (InternalRow) $input.next();
+       |   // [InputAdapter.doProduce] 交给consume方法处理
        |   ${consume(ctx, null, row).trim}
-       |   if (shouldStop()) return;
+       |   if (shouldStop()) return; // [InputAdapter.doProduce]
        | }
+       | // [InputAdapter.doProduce end]
      """.stripMargin
   }
 
@@ -341,7 +381,7 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
   def doCodeGen(): (CodegenContext, CodeAndComment) = {
     // 构造CodoegenContext。
     val ctx = new CodegenContext
-    // 将此对象作为CodegenSupport中produce方法的参数，直接调用produce方法生成具体的处理代码片段code。
+    // 将此对象作为CodegenSupport中produce方法的参数，直接调用子节点的produce方法生成具体的处理代码片段code。
     val code = child.asInstanceOf[CodegenSupport].produce(ctx, this)
     // 基于code代码片段和代码生成之后的CodegenContext对象，构造完整的代码段。
     val source = s"""
@@ -394,7 +434,7 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
       // 尝试使用Janino编译，内部有缓存机制，不会重复编译
       CodeGenerator.compile(cleanedSource)
     } catch {
-      // 如果编译失败且配置回退机制（参数spark.sql.codegen.wholeStage默认为true），则代码生成将被舍弃转而执行Spark原生的逻辑。
+      // 如果编译失败且配置回退机制（参数spark.sql.codegen.fallback默认为true），则代码生成将被舍弃转而执行Spark原生的逻辑。
       case e: Exception if !Utils.isTesting && sqlContext.conf.wholeStageFallback => // spark.sql.codegen.fallback
         // We should already saw the error message
         logWarning(s"Whole-stage codegen disabled for this plan:\n $treeString")
@@ -455,13 +495,16 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
+    // 决定结果是否需要复制
     val doCopy = if (ctx.copyResult) {
       ".copy()"
     } else {
       ""
     }
     s"""
+      |// [WholeStageCodegenExec#doConsume] 首先输出row变量的代码，对应于子节点的输入列
       |${row.code}
+      |// [WholeStageCodegenExec#doConsume] 添加结果
       |append(${row.value}$doCopy);
      """.stripMargin.trim
   }
@@ -479,16 +522,24 @@ case class WholeStageCodegenExec(child: SparkPlan) extends UnaryExecNode with Co
 
 /**
  * Find the chained plans that support codegen, collapse them together as WholeStageCodegen.
+ *
+ * 找出支持Codegen的链条计划，将它们折叠为一个WholeStageCodegen节点，用于全阶段代码生成
  */
 case class CollapseCodegenStages(conf: SQLConf) extends Rule[SparkPlan] {
 
   private def supportCodegen(e: Expression): Boolean = e match {
+    // 叶子节点表达式支持Codegen
     case e: LeafExpression => true
     // CodegenFallback requires the input to be an InternalRow
+    /**
+     * CodegenFallback类型的表达式要求输入时InternalRow类型。
+     * 实现了CodegenFallback特质的表达式不支持Codegen。
+     */
     case e: CodegenFallback => false
     case _ => true
   }
 
+  // 递归调用计算嵌套的字段数量
   private def numOfNestedFields(dataType: DataType): Int = dataType match {
     case dt: StructType => dt.fields.map(f => numOfNestedFields(f.dataType)).sum
     case m: MapType => numOfNestedFields(m.keyType) + numOfNestedFields(m.valueType)
@@ -498,13 +549,18 @@ case class CollapseCodegenStages(conf: SQLConf) extends Rule[SparkPlan] {
   }
 
   private def supportCodegen(plan: SparkPlan): Boolean = plan match {
-    case plan: CodegenSupport if plan.supportCodegen =>
+    case plan: CodegenSupport if plan.supportCodegen => // plan需要是CodegenSupport的子类，同时支持Codegen
+      // plan中是否存在不支持Codegen的表达式
       val willFallback = plan.expressions.exists(_.find(e => !supportCodegen(e)).isDefined)
       // the generated code will be huge if there are too many columns
+      // plan是否太多输出字段
       val hasTooManyOutputFields =
-        numOfNestedFields(plan.schema) > conf.wholeStageMaxNumFields
+        numOfNestedFields(plan.schema) > conf.wholeStageMaxNumFields // spark.sql.codegen.maxFields，默认100
+      // plan是否太多输入字段
       val hasTooManyInputFields =
-        plan.children.map(p => numOfNestedFields(p.schema)).exists(_ > conf.wholeStageMaxNumFields)
+        plan.children.map(p => numOfNestedFields(p.schema)).exists(_ > conf.wholeStageMaxNumFields) // spark.sql.codegen.maxFields，默认100
+
+      // 不存在不支持Codegen的表达式，输入输出列都不超过限制
       !willFallback && !hasTooManyOutputFields && !hasTooManyInputFields
     case _ => false
   }
@@ -513,33 +569,43 @@ case class CollapseCodegenStages(conf: SQLConf) extends Rule[SparkPlan] {
    * Inserts an InputAdapter on top of those that do not support codegen.
    */
   private def insertInputAdapter(plan: SparkPlan): SparkPlan = plan match {
+    // InnerLike Join支持Codegen，其他不支持
     case j @ SortMergeJoinExec(_, _, _, _, left, right) if j.supportCodegen =>
       // The children of SortMergeJoin should do codegen separately.
+      // 在左右子节点上层包装一个InputAdapter节点
       j.copy(left = InputAdapter(insertWholeStageCodegen(left)),
         right = InputAdapter(insertWholeStageCodegen(right)))
-    case p if !supportCodegen(p) =>
+    case p if !supportCodegen(p) => // p不支持Codegen
       // collapse them recursively
+      // 在p节点上层包装一个InputAdapter节点
       InputAdapter(insertWholeStageCodegen(p))
     case p =>
+      // 其他情况，给p所有子节点上层包装一个InputAdapter节点
       p.withNewChildren(p.children.map(insertInputAdapter))
   }
 
   /**
    * Inserts a WholeStageCodegen on top of those that support codegen.
+   *
+   * 在支持Codegen的节点上添加WholeStageCodegen节点，递归调用。
    */
   private def insertWholeStageCodegen(plan: SparkPlan): SparkPlan = plan match {
     // For operators that will output domain object, do not insert WholeStageCodegen for it as
     // domain object can not be written into unsafe row.
+    // 计划只有一个ObjectType类型输出列，递归判断子节点是否可以插入WholeStageCodegen节点
     case plan if plan.output.length == 1 && plan.output.head.dataType.isInstanceOf[ObjectType] =>
       plan.withNewChildren(plan.children.map(insertWholeStageCodegen))
     case plan: CodegenSupport if supportCodegen(plan) =>
+      // 插入WholeStageCodegenExec节点，递归判断子节点是否需要插入InputAdapter节点
       WholeStageCodegenExec(insertInputAdapter(plan))
     case other =>
+      // 递归判断子节点是否可以插入WholeStageCodegen节点
       other.withNewChildren(other.children.map(insertWholeStageCodegen))
   }
 
   def apply(plan: SparkPlan): SparkPlan = {
-    if (conf.wholeStageEnabled) {
+    if (conf.wholeStageEnabled) { // spark.sql.codegen.wholeStage，默认为true
+      // 插入WholeStageCodegen节点
       insertWholeStageCodegen(plan)
     } else {
       plan

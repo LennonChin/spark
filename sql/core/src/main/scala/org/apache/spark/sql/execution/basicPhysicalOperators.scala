@@ -57,14 +57,24 @@ case class ProjectExec(projectList: Seq[NamedExpression], child: SparkPlan)
   }
 
   override def doConsume(ctx: CodegenContext, input: Seq[ExprCode], row: ExprCode): String = {
-    val exprs = projectList.map(x =>
+
+    // 根据Project List得到输出列的表达式列表
+    val exprs: Seq[Expression] = projectList.map(x =>
       ExpressionCanonicalizer.execute(BindReferences.bindReference(x, child.output)))
+
+    // 设置为传递进来的输入变量
     ctx.currentVars = input
+
+    // 生成Project List表达式的代码作为结果列
     val resultVars = exprs.map(_.genCode(ctx))
+
     // Evaluation of non-deterministic expressions can't be deferred.
+    // 提取不确定列表达式
     val nonDeterministicAttrs = projectList.filterNot(_.deterministic).map(_.toAttribute)
     s"""
+       |// [ProjectExec#doConsume] 针对不确定表达式的代码生成，比如rand()函数等待
        |${evaluateRequiredVariables(output, resultVars, AttributeSet(nonDeterministicAttrs))}
+       |// [ProjectExec#doConsume] 调用consume，继续调用父类doConsume方法
        |${consume(ctx, resultVars)}
      """.stripMargin
   }
@@ -90,6 +100,10 @@ case class FilterExec(condition: Expression, child: SparkPlan)
   extends UnaryExecNode with CodegenSupport with PredicateHelper {
 
   // Split out all the IsNotNulls from condition.
+  /**
+   * 将谓词分为notNull和其他类型，例如对于谓词age > 22，会产生IsNotNull(age)和GreaterThan(age, 22)两个谓词，
+   * 前一个为notNull类型谓词，后一个为其他类型谓词。
+   */
   private val (notNullPreds, otherPreds) = splitConjunctivePredicates(condition).partition {
     case IsNotNull(a) => isNullIntolerant(a) && a.references.subsetOf(child.outputSet)
     case _ => false
@@ -145,19 +159,28 @@ case class FilterExec(condition: Expression, child: SparkPlan)
      */
     def genPredicate(c: Expression, in: Seq[ExprCode], attrs: Seq[Attribute]): String = {
       val bound = BindReferences.bindReference(c, attrs)
+      // evaluateRequiredVariables(attributes: Seq[Attribute], variables: Seq[ExprCode], required: AttributeSet)
+      // 从子节点输出列中找出需要的列的代码段，按行分隔
       val evaluated = evaluateRequiredVariables(child.output, in, c.references)
 
       // Generate the code for the predicate.
+      // 生成谓词代码
       val ev = ExpressionCanonicalizer.execute(bound).genCode(ctx)
+
+      // Null值判断代码
       val nullCheck = if (bound.nullable) {
         s"${ev.isNull} || "
       } else {
         s""
       }
 
+      // 拼装列声明代码、谓词判断执行代码、Null值判断代码
       s"""
+         |// [FilterExec#doConsume] 列声明代码
          |$evaluated
+         |// [FilterExec#doConsume] 谓词判断执行代码
          |${ev.code}
+         |// [FilterExec#doConsume] if中可能存在的Null值判断条件
          |if (${nullCheck}!${ev.value}) continue;
        """.stripMargin
     }
@@ -174,13 +197,33 @@ case class FilterExec(condition: Expression, child: SparkPlan)
     // short-circuiting, not loading attributes until they are needed.
     // This is very perf sensitive.
     // TODO: revisit this. We can consider reordering predicates as well.
+
+    /**
+     * 为了生成谓词，我们将遵循这个算法。
+     * 对于每个不是 IsNotNull 的谓词，我们会根据需要一一生成它们的加载属性。
+     * 对于这两个属性中的每一个，如果存在 IsNotNull 谓词，我们将在谓词*之前*生成该检查。
+     * 在所有这些谓词之后，我们将生成不属于其他谓词的其余 IsNotNull 检查。
+     * 这具有不进行冗余 IsNotNull 检查并更好地利用短路的特性，在需要之前不加载属性。 这是非常敏感的。
+     *
+     * TODO: 重温这个。 我们也可以考虑重新排序谓词。
+     */
+
+    // 生成notNull检查谓词的代码
     val generatedIsNotNullChecks = new Array[Boolean](notNullPreds.length)
+
+    // 遍历非notNull检查的其他谓词
     val generated = otherPreds.map { c =>
+      // 对非notNull谓词里的列生成可能存在的Null值检查代码
       val nullChecks = c.references.map { r =>
+        // 检查非notNull检查谓词条件里的引用是否存在notNull检查
         val idx = notNullPreds.indexWhere { n => n.asInstanceOf[IsNotNull].child.semanticEquals(r)}
+
+        // idx不为-1，且generatedIsNotNullChecks中未记录，则需要处理
         if (idx != -1 && !generatedIsNotNullChecks(idx)) {
+          // 记录在generatedIsNotNullChecks中
           generatedIsNotNullChecks(idx) = true
           // Use the child's output. The nullability is what the child produced.
+          // 生成谓词过滤代码，输入参数分别是：notNull谓词条件、输入列的ExprCode列表，子节点输出列
           genPredicate(notNullPreds(idx), input, child.output)
         } else {
           ""
@@ -190,11 +233,14 @@ case class FilterExec(condition: Expression, child: SparkPlan)
       // Here we use *this* operator's output with this output's nullability since we already
       // enforced them with the IsNotNull checks above.
       s"""
+         |// [FilterExec#doConsume] 可能存在的Null值检查代码
          |$nullChecks
+         |// [FilterExec#doConsume] 生成notNull谓词的判断代码
          |${genPredicate(c, input, output)}
        """.stripMargin.trim
     }.mkString("\n")
 
+    // 剩余的notNull谓词条件单独生成判断代码
     val nullChecks = notNullPreds.zipWithIndex.map { case (c, idx) =>
       if (!generatedIsNotNullChecks(idx)) {
         genPredicate(c, input, child.output)
@@ -205,7 +251,12 @@ case class FilterExec(condition: Expression, child: SparkPlan)
 
     // Reset the isNull to false for the not-null columns, then the followed operators could
     // generate better code (remove dead branches).
+    /**
+     * 根据子节点的输入列，将其中存在NotNull判断的列的isNull置为false，这将为后续的操作生成更好的代码（即移除无用分支）；
+     * 然后将所有输入列作为结果列列表，也将作为consume方法的第二个参数，即作为父节点的输入列。
+     */
     val resultVars = input.zipWithIndex.map { case (ev, i) =>
+      // 判断在notNullAttribute中是否包含遍历到的列，如果包含，则说明该列的isNull可以置为false
       if (notNullAttributes.contains(child.output(i).exprId)) {
         ev.isNull = "false"
       }
@@ -213,9 +264,13 @@ case class FilterExec(condition: Expression, child: SparkPlan)
     }
 
     s"""
+       |// [FilterExec#doConsume] 非NotNull谓词条件，可能会有NotNull判断
        |$generated
+       |// [FilterExec#doConsume] 纯NotNull谓词条件
        |$nullChecks
+       |// [FilterExec#doConsume] 输出度量值自增
        |$numOutput.add(1);
+       |// [FilterExec#doConsume] 调用consume，继续调用父节点的doConsume
        |${consume(ctx, resultVars)}
      """.stripMargin
   }

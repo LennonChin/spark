@@ -286,32 +286,51 @@ case class And(left: Expression, right: Expression) extends BinaryOperator with 
   }
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 获取And左右两边的表达式的ExprCode代码
     val eval1 = left.genCode(ctx)
     val eval2 = right.genCode(ctx)
 
     // The result should be `false`, if any of them is `false` whenever the other is null or not.
     if (!left.nullable && !right.nullable) {
+      // 左右两侧都不能为null
       ev.copy(code = s"""
+        // 计算And左表达式执行结果
         ${eval1.code}
+
+        // And表达式的最终结果，初始为false
         boolean ${ev.value} = false;
 
+        // 如果And左表达式结果为true
         if (${eval1.value}) {
+          // 计算And右表达式结果
           ${eval2.code}
+          // 判断And右表达式结果是否为true，赋值给And表达式的结果
           ${ev.value} = ${eval2.value};
         }""", isNull = "false")
     } else {
+      // 左右表达式结果有一个或多个可能为null
       ev.copy(code = s"""
+        // 计算And左表达式执行结果
         ${eval1.code}
+
+        // And表达式结果是否为Null
         boolean ${ev.isNull} = false;
+
+        // And表达式的最终结果，初始为false
         boolean ${ev.value} = false;
 
         if (!${eval1.isNull} && !${eval1.value}) {
+          // And左表达式结果不为Null，且结果为false，那么最终结果就是false
         } else {
+          // 计算And右表达式结果
           ${eval2.code}
           if (!${eval2.isNull} && !${eval2.value}) {
+            // And右表达式结果不为Null，且结果为false，那么最终结果就是false，isNull为false
           } else if (!${eval1.isNull} && !${eval2.isNull}) {
+            // And左右表达式结果都不为Null，且左右表达式结果都为true，那么最终结果就是true，isNull为false
             ${ev.value} = true;
           } else {
+            // And右表达式结果为Null，那么最终结果就是false，isNull为true
             ${ev.isNull} = true;
           }
         }
@@ -388,13 +407,16 @@ case class Or(left: Expression, right: Expression) extends BinaryOperator with P
 abstract class BinaryComparison extends BinaryOperator with Predicate {
 
   override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
+    // 判断表达式做节点的类型是否是非BooleanType、FloatType、DoubleType基本类型
     if (ctx.isPrimitiveType(left.dataType)
         && left.dataType != BooleanType // java boolean doesn't support > or < operator
         && left.dataType != FloatType
         && left.dataType != DoubleType) {
       // faster version
+      // 非BooleanType、FloatType、DoubleType的基本类型
       defineCodeGen(ctx, ev, (c1, c2) => s"$c1 $symbol $c2")
     } else {
+      // 其他类型需要使用CodegenContext的genComp方法生成
       defineCodeGen(ctx, ev, (c1, c2) => s"${ctx.genComp(left.dataType, c1, c2)} $symbol 0")
     }
   }

@@ -108,6 +108,8 @@ abstract class Expression extends TreeNode[Expression] {
    * Returns an [[ExprCode]], that contains the Java source code to generate the result of
    * evaluating the expression on an input row.
    *
+   * 返回一个 [[ExprCode]]，它包含 Java 源代码以生成对输入行的表达式求值的结果。
+   *
    * 用于生成表达式对应的Java代码
    *
    * @param ctx a [[CodegenContext]]
@@ -117,6 +119,7 @@ abstract class Expression extends TreeNode[Expression] {
     ctx.subExprEliminationExprs.get(this).map { subExprState =>
       // This expression is repeated which means that the code to evaluate it has already been added
       // as a function before. In that case, we just re-use it.
+      // 这个表达式被重复了，这意味着计算它的代码之前已经作为函数添加了。 在这种情况下，我们只需重新使用它。
       ExprCode(ctx.registerComment(this.toString), subExprState.isNull, subExprState.value)
     }.getOrElse {
       val isNull = ctx.freshName("isNull")
@@ -466,12 +469,17 @@ abstract class BinaryExpression extends Expression {
    * If either of the sub-expressions is null, the result of this computation
    * is assumed to be null.
    *
+   * 用于生成Binary类型算子执行代码的快捷方式。
+   * 如果存在子表达式为null，最终的计算结果会被指定为null。
+   *
    * @param f accepts two variable names and returns Java code to compute the output.
    */
   protected def defineCodeGen(
       ctx: CodegenContext,
       ev: ExprCode,
       f: (String, String) => String): ExprCode = {
+
+    // 处理null safe
     nullSafeCodeGen(ctx, ev, (eval1, eval2) => {
       s"${ev.value} = ${f(eval1, eval2)};"
     })
@@ -482,6 +490,9 @@ abstract class BinaryExpression extends Expression {
    * If either of the sub-expressions is null, the result of this computation
    * is assumed to be null.
    *
+   * 用于生成Binary类型算子执行代码的快捷方式。
+   * 如果存在子表达式为null，最终的计算结果会被指定为null。
+   *
    * @param f function that accepts the 2 non-null evaluation result names of children
    *          and returns Java code to compute the output.
    */
@@ -489,12 +500,18 @@ abstract class BinaryExpression extends Expression {
       ctx: CodegenContext,
       ev: ExprCode,
       f: (String, String) => String): ExprCode = {
+
+    // 左右节点的代码
     val leftGen = left.genCode(ctx)
     val rightGen = right.genCode(ctx)
+
+    // 传入到f方法中执行得到代码段
     val resultCode = f(leftGen.value, rightGen.value)
 
-    if (nullable) {
+    if (nullable) { // 表达式结果可为null
+
       val nullSafeEval =
+        // 增加null情况判断，如果左右节点都不为null，ev.isNull会被设置为false
         leftGen.code + ctx.nullSafeExec(left.nullable, leftGen.isNull) {
           rightGen.code + ctx.nullSafeExec(right.nullable, rightGen.isNull) {
             s"""
@@ -506,15 +523,27 @@ abstract class BinaryExpression extends Expression {
 
       ev.copy(code = s"""
         boolean ${ev.isNull} = true;
+        // 当前表达式的结果默认值
         ${ctx.javaType(dataType)} ${ev.value} = ${ctx.defaultValue(dataType)};
+
+        // 当前表达式的结果是否为Null
         $nullSafeEval
       """)
-    } else {
+    } else { // 表达式结果不可为null
+
       ev.copy(code = s"""
+        // 当前表达式的结果不为Null
         boolean ${ev.isNull} = false;
+
+        // 左节点的代码
         ${leftGen.code}
+        // 右节点的代码
         ${rightGen.code}
+
+        // 当前表达式的结果默认值
         ${ctx.javaType(dataType)} ${ev.value} = ${ctx.defaultValue(dataType)};
+
+        // Binary表达式主要的执行代码
         $resultCode""", isNull = "false")
     }
   }
