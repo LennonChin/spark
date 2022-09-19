@@ -94,20 +94,20 @@ private[spark] class DiskStore(conf: SparkConf, diskManager: DiskBlockManager) e
       finishTime - startTime))
   }
 
-  // 用于将BlockId所对应的Block写入磁盘
-  def putBytes(blockId: BlockId, bytes: ChunkedByteBuffer): Unit = {
-    // 调用put()方法，传入描述了写出操作的回调函数
-    put(blockId) { fileOutputStream =>
-      // 获取文件流的FileChannel
-      val channel = fileOutputStream.getChannel
-      Utils.tryWithSafeFinally {
-        // 使用FileChannel写出到磁盘
-        bytes.writeFully(channel)
-      } {
-        channel.close()
-      }
+// 用于将BlockId所对应的Block写入磁盘
+def putBytes(blockId: BlockId, bytes: ChunkedByteBuffer): Unit = {
+  // 调用put()方法，传入描述了写出操作的回调函数
+  put(blockId) { fileOutputStream =>
+    // 获取文件流的FileChannel
+    val channel = fileOutputStream.getChannel
+    Utils.tryWithSafeFinally {
+      // 使用FileChannel写出到磁盘
+      bytes.writeFully(channel)
+    } {
+      channel.close()
     }
   }
+}
 
   // 用于读取给定BlockId所对应的Block，并封装为ChunkedByteBuffer返回
   def getBytes(blockId: BlockId): ChunkedByteBuffer = {

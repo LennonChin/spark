@@ -1125,7 +1125,7 @@ private[spark] class BlockManager(
       tellMaster: Boolean = true,
       keepReadLock: Boolean = false): Option[PartiallyUnrolledIterator[T]] = {
 
-    // 执行Block的写入
+    // 执行Block的写入，doPut主要用于锁的控制，它的第二个柯里化参数putBody才是具体的数据写入实现
     doPut(blockId, level, classTag, tellMaster = tellMaster, keepReadLock = keepReadLock) { info =>
       val startTimeMs = System.currentTimeMillis
       var iteratorFromFailedMemoryStorePut: Option[PartiallyUnrolledIterator[T]] = None
